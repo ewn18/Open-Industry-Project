@@ -3,10 +3,10 @@
 
 import { SNAP_HEIGHT_COST_WEIGHT, SNAP_HEIGHT_TOLERANCE, SNAP_ROTATION_COST_WEIGHT, SNAP_STAIRS_HEIGHT_PADDING, SNAP_VISIBLE_THRESHOLD, STAIRS_MIN_RISE } from '../types'
 import type { PartInstance } from '../types'
-import { forwardXZ, normalizeAngle } from '../math'
+import { angleDiff, forwardXZ, normalizeAngle } from '../math'
 import { rotateXZ as rotXZ } from '../transforms'
 import type { SnapChain, SnapEdgeMount, SnapSurface, SnapTile } from '../parts/partApi'
-import { edgeMountContact } from './snapConnectors'
+import { chainEndpoints, edgeMountContact } from './snapConnectors'
 import { clampAlongEdge, clampToParamSpec, dirYaw, flushOnEdges, nearerYaw, nearestRectEdge, numParamOf, rectMoverFaces, rectWorldEdges } from './snapShared'
 import type { SnapCandidate, SnapPose } from './snapFeatures'
 
@@ -14,26 +14,27 @@ import type { SnapCandidate, SnapPose } from './snapFeatures'
 
 /**
  * End-to-end chain snap (docs/part-snap-chain.md): the barrier family, open to any part that declares `chain`.
- * A linear part (extent along local +X, half = length/2) dropped near a same-group chain part either extends
- * collinearly off the nearer end (facings roughly parallel) or forms a 90-degree L-corner (perpendicular). At an
- * L-corner the two parts share one post: the mover omits its mating post and the target un-omits the shared end
- * (via the declared `omit*Param` booleans), so the corner post draws once. Group-gated (guard rails chain only
- * with guard rails; the fence family shares a group); the mover's `reach` sets the engage distance.
+ * A linear part (link points at `±length/2` along local X by default, or shifted in 3D by `start` / `end` and
+ * `startParams` / `endParams`) dropped near a same-group chain part either extends collinearly off the nearer end
+ * (facings roughly parallel) or forms a 90-degree L-corner (perpendicular). At an L-corner the two parts share one
+ * post: the mover omits its mating post and the target un-omits the shared end (via the declared `omit*Param`
+ * booleans), so the corner post draws once. Group-gated (guard rails chain only with guard rails; the fence family
+ * shares a group); the mover's `reach` sets the engage distance.
  */
 export function snapChain(moving: PartInstance, proposed: SnapPose, target: PartInstance, mine: SnapChain, theirs: SnapChain): SnapCandidate | null {
   if (mine.group !== theirs.group) return null
-  const mLen = numParamOf(moving, mine.lengthParam)
-  const tLen = numParamOf(target, theirs.lengthParam)
-  if (mLen === null || tLen === null) return null
+  const mEnds = chainEndpoints(mine, moving.params as Record<string, unknown>)
+  const tEnds = chainEndpoints(theirs, target.params as Record<string, unknown>)
+  if (mEnds === null || tEnds === null) return null
   const vis = mine.reach
   const [tx, ty, tz] = target.position
-  const dy = Math.abs(proposed.position[1] - ty)
-  if (dy > SNAP_HEIGHT_TOLERANCE) return null
-  const [px, , pz] = proposed.position
+  const [px, py, pz] = proposed.position
   const tF = forwardXZ(target.rotationY)
-  const tHalf = tLen / 2
-  const mHalf = mLen / 2
   const fm = forwardXZ(proposed.rotationY)
+  const stepXZ = (ox: number, oz: number, fx: number, fz: number, lx: number, lz: number): { x: number; z: number } =>
+    lz === 0 ? { x: ox + fx * lx, z: oz + fz * lx } : { x: ox + fx * lx - fz * lz, z: oz + fz * lx + fx * lz }
+  const tEndW = stepXZ(tx, tz, tF.x, tF.z, tEnds.end[0], tEnds.end[2])
+  const tStartW = stepXZ(tx, tz, tF.x, tF.z, tEnds.start[0], tEnds.start[2])
 
   // the mover's omit-post overrides (only when it names the params); the target un-omits its shared end
   const movingOmit = (start: boolean, end: boolean): Record<string, boolean> | undefined => {
@@ -49,27 +50,34 @@ export function snapChain(moving: PartInstance, proposed: SnapPose, target: Part
 
   if (Math.abs(fm.x * tF.x + fm.z * tF.z) >= 0.5) {
     // collinear extension off the nearer end
-    const d = tHalf + mHalf
+    const colYaw = nearerYaw(proposed.rotationY, target.rotationY, target.rotationY + Math.PI)
+    const sameDir = Math.abs(angleDiff(target.rotationY, proposed.rotationY)) <= Math.abs(angleDiff(target.rotationY + Math.PI, proposed.rotationY))
+    const mAtEnd = sameDir ? mEnds.start : mEnds.end
+    const mAtStart = sameDir ? mEnds.end : mEnds.start
+    const mSign = sameDir ? -1 : 1
+    const pEnd = stepXZ(tx, tz, tF.x, tF.z, tEnds.end[0] + mSign * mAtEnd[0], tEnds.end[2] + mSign * mAtEnd[2])
+    const pStart = stepXZ(tx, tz, tF.x, tF.z, tEnds.start[0] + mSign * mAtStart[0], tEnds.start[2] + mSign * mAtStart[2])
     const cands = [
-      { x: tx + tF.x * d, z: tz + tF.z * d, plus: true },
-      { x: tx - tF.x * d, z: tz - tF.z * d, plus: false },
-    ]
+      { x: pEnd.x, y: ty + tEnds.end[1] - mAtEnd[1], z: pEnd.z, jx: tEndW.x, jy: ty + tEnds.end[1], jz: tEndW.z },
+      { x: pStart.x, y: ty + tEnds.start[1] - mAtStart[1], z: pStart.z, jx: tStartW.x, jy: ty + tEnds.start[1], jz: tStartW.z },
+    ].filter((cand) => Math.abs(py - cand.y) <= SNAP_HEIGHT_TOLERANCE)
+    if (cands.length === 0) return null
     const c =
-      Math.hypot(px - cands[0]!.x, pz - cands[0]!.z) <= Math.hypot(px - cands[1]!.x, pz - cands[1]!.z)
+      cands.length === 1 || Math.hypot(px - cands[0]!.x, pz - cands[0]!.z) <= Math.hypot(px - cands[1]!.x, pz - cands[1]!.z)
         ? cands[0]!
         : cands[1]!
     const move = Math.hypot(px - c.x, pz - c.z)
     if (move > vis) return null
-    const sign = c.plus ? 1 : -1
+    const dy = Math.abs(py - c.y)
     const overrides = movingOmit(false, false)
     return {
       pose: {
-        position: [c.x, ty, c.z],
-        rotationY: nearerYaw(proposed.rotationY, target.rotationY, target.rotationY + Math.PI),
+        position: [c.x, c.y, c.z],
+        rotationY: colYaw,
       },
       targetId: target.id,
       cost: move + SNAP_HEIGHT_COST_WEIGHT * dy,
-      junction: { x: tx + sign * tF.x * tHalf, y: ty, z: tz + sign * tF.z * tHalf },
+      junction: { x: c.jx, y: c.jy, z: c.jz },
       ...(overrides ? { paramOverrides: overrides } : {}),
     }
   }
@@ -82,38 +90,47 @@ export function snapChain(moving: PartInstance, proposed: SnapPose, target: Part
     cz = -cz
   }
   const cornerYaw = normalizeAngle(dirYaw(cx, cz))
-  const tEnds = [
-    { x: tx + tF.x * tHalf, z: tz + tF.z * tHalf, plus: true },
-    { x: tx - tF.x * tHalf, z: tz - tF.z * tHalf, plus: false },
+  const tPts = [
+    { x: tEndW.x, y: ty + tEnds.end[1], z: tEndW.z, plus: true },
+    { x: tStartW.x, y: ty + tEnds.start[1], z: tStartW.z, plus: false },
+  ]
+  const mPts = [
+    { pt: mEnds.end, plus: true },
+    { pt: mEnds.start, plus: false },
   ]
   let bestX = px
+  let bestY = py
   let bestZ = pz
-  let bestEnd = tEnds[0]!
+  let bestEnd: (typeof tPts)[number] | null = null
   let movingPlusEnd = true
   let bestD = Infinity
-  for (const te of tEnds) {
-    for (const mSign of [1, -1] as const) {
-      const x = te.x - mSign * cx * mHalf
-      const z = te.z - mSign * cz * mHalf
-      const d = (px - x) ** 2 + (pz - z) ** 2
+  for (const te of tPts) {
+    for (const me of mPts) {
+      const y = te.y - me.pt[1]
+      if (Math.abs(py - y) > SNAP_HEIGHT_TOLERANCE) continue
+      const p = stepXZ(te.x, te.z, -cx, -cz, me.pt[0], me.pt[2])
+      const d = (px - p.x) ** 2 + (pz - p.z) ** 2
       if (d < bestD) {
         bestD = d
-        bestX = x
-        bestZ = z
+        bestX = p.x
+        bestY = y
+        bestZ = p.z
         bestEnd = te
-        movingPlusEnd = mSign === 1
+        movingPlusEnd = me.plus
       }
     }
   }
+  if (bestEnd === null) return null
   const move = Math.hypot(px - bestX, pz - bestZ)
   if (move > vis) return null
+  const dy = Math.abs(py - bestY)
   const overrides = movingOmit(!movingPlusEnd, movingPlusEnd)
   const targetOverrides = targetUnomit(bestEnd.plus ? 'end' : 'start')
   return {
-    pose: { position: [bestX, ty, bestZ], rotationY: cornerYaw },
+    pose: { position: [bestX, bestY, bestZ], rotationY: cornerYaw },
     targetId: target.id,
     cost: move + SNAP_HEIGHT_COST_WEIGHT * dy,
-    junction: { x: bestEnd.x, y: ty, z: bestEnd.z },
+    junction: { x: bestEnd.x, y: bestEnd.y, z: bestEnd.z },
     ...(overrides ? { paramOverrides: overrides } : {}),
     ...(targetOverrides ? { targetParamOverrides: targetOverrides } : {}),
   }

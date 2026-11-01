@@ -117,6 +117,23 @@ describe('custom-part packages (External IDE + SDK model)', () => {
     expect(validatePartPackage(pkg)).toEqual([])
   })
 
+  it('validates snap.chain 3D start/end points and startParams/endParams', () => {
+    const geom = { kind: 'rig' as const, links: [{ name: 'deck', shape: { kind: 'box' as const, size: [1, 0.1, 1] as [number, number, number] }, offset: [0, -0.05, 0] as [number, number, number], conveys: true }], joints: [], bounds: { length: 1, width: 1, top: 0.05, bottom: -0.1 } }
+    const okSrc = `definePart({ snap: { chain: { group: 'g', reach: 1.5, start: [-1, 0.2, 0.3], startParams: [{ axis: 2, param: 'depth', scale: 0.5 }], end: [1, 0.2, 0.3], endParams: [{ axis: 2, param: 'depth', scale: 0.5 }] } }, params: { depth: { type: 'number', default: 0.4 } }, step(){} })`
+    const okPkg = buildPackage({ id: 'oip.chain3d', name: 'Chain3D', geometry: geom }, okSrc)
+    expect(validatePartPackage(okPkg)).toEqual([])
+    expect(validateSnapParamRefs(okPkg)).toEqual([])
+
+    const missingBoth = `definePart({ snap: { chain: { group: 'g', reach: 1.5, start: [-1, 0, 0] } }, step(){} })`
+    expect(() => buildPackage({ id: 'oip.badchain1', name: 'BadChain1', geometry: geom }, missingBoth)).toThrow(/snap\.chain\.lengthParam/)
+
+    const badVec = `definePart({ snap: { chain: { group: 'g', lengthParam: 'length', reach: 1.5, start: [0, 1] } }, params: { length: { type: 'number', default: 2 } }, step(){} })`
+    expect(() => buildPackage({ id: 'oip.badchain2', name: 'BadChain2', geometry: geom }, badVec)).toThrow(/snap\.chain\.start/)
+
+    const badParamRef = `definePart({ snap: { chain: { group: 'g', reach: 1.5, start: [-1, 0, 0], end: [1, 0, 0], endParams: [{ axis: 1, param: 'missing' }] } }, step(){} })`
+    expect(() => buildPackage({ id: 'oip.badchain3', name: 'BadChain3', geometry: geom }, badParamRef)).toThrow(/snap\.chain\.endParams\[\]\.param/)
+  })
+
   // The mount's own fields are validated like every sibling block's. `face` matters most: seatOnRail reads it
   // as `m.face !== 'out'`, so an unchecked misspelling would silently mean inward, a diverter that pushes the
   // wrong way rather than one that fails to build.

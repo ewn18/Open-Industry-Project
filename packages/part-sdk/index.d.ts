@@ -1567,25 +1567,26 @@ export interface SnapTile {
      *  the floor-marking behaviour when a mover overhangs a smaller target. Default false (plain edge slide). */
     cornerFlush?: boolean;
 }
-/**
- * End-to-end chaining for a linear part: the barrier snap (guard rails, fences, safety gates). The part
- * extends along its local +X (forward), half-length `length/2`. Dropped near a same-{@link group} part, it either
- * extends collinearly off the nearer end (facings roughly parallel) or forms a 90-degree L-corner (perpendicular). At an L-corner the two parts share one post, so the snap toggles the
- * named `omit*Param` booleans to draw it once. The moved part omits its mating post and the
- * target un-omits the shared end, and the host applies both as one undo entry.
- */
+/** End-to-end chaining for a linear part (guard rails, fences, safety gates; `docs/part-snap-chain.md`): collinear
+ *  extend or 90-degree L-corner with a shared post toggled via `omit*Param`. */
 export interface SnapChain {
-    /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share
-     *  a group; the two groups never mix. The declarative form of the barrier-family rule. */
+    /** parts chain only with same-group parts (guard rails vs the fence + gate family). */
     group: string;
-    /** names the `number` param giving the rail length (extends along local +X, half-length = length/2) */
-    lengthParam: string;
+    /** `number` param giving the rail length along local +X (ends at `±length/2`); optional when `start` and `end` are set. */
+    lengthParam?: string;
     /** engage reach in metres - how near a drop must be to chain (a guard rail's ~3 m, a fence's tighter ~1 m) */
     reach: number;
-    /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and
-     *  toggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts. */
+    /** Local `[x, y, z]` of the start (−X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when `lengthParam` is set). */
+    start?: [number, number, number];
+    /** Param-driven shifts applied to {@link start} (`axis: 0 | 1 | 2`). */
+    startParams?: SnapParamOffset[];
+    /** Local `[x, y, z]` of the end (+X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when `lengthParam` is set). */
+    end?: [number, number, number];
+    /** Param-driven shifts applied to {@link end} (`axis: 0 | 1 | 2`). */
+    endParams?: SnapParamOffset[];
+    /** Optional `boolean` param for the start-end (−X) post; set false on collinear extend and toggled at an L-corner. */
     omitStartParam?: string;
-    /** Optional: names the `boolean` param for the end-end (local +X) post - the twin of {@link omitStartParam}. */
+    /** Optional `boolean` param for the end-end (+X) post - the twin of {@link omitStartParam}. */
     omitEndParam?: string;
 }
 /** A param-driven shift of a point, like a link's `offsetParams`: `params[param] × scale + add` (clamped to

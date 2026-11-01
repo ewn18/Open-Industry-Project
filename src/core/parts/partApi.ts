@@ -412,14 +412,14 @@ export type ParamHandle =
    *  collapsed to fully extended). So a hinge bends not at all at either extreme, most at mid-stretch, less on a
    *  wider bed. The host draws each section's rollers fanned across it, and every pull stops at this limit. */
   | {
-      kind: 'flexPath'
-      lengthParam: string
-      sections: number
-      maxHingeDeg?: number
-      infeedBrakeParam?: string
-      dischargeBrakeParam?: string
-      scissor?: { widthParam: string; rollers: number }
-    }
+    kind: 'flexPath'
+    lengthParam: string
+    sections: number
+    maxHingeDeg?: number
+    infeedBrakeParam?: string
+    dischargeBrakeParam?: string
+    scissor?: { widthParam: string; rollers: number }
+  }
 
 export type ParamSchema = Record<string, ParamSpec>
 export type ParamValue = number | boolean | string | number[][]
@@ -428,12 +428,12 @@ export type ParamValue = number | boolean | string | number[][]
 export type ParamValueOf<S extends ParamSpec> = S['type'] extends 'number'
   ? number
   : S['type'] extends 'boolean'
-    ? boolean
-    : S['type'] extends 'string' | 'tag' | 'color' | 'enum' | 'partRef'
-      ? string
-      : S['type'] extends 'numberList'
-        ? readonly number[][]
-        : ParamValue
+  ? boolean
+  : S['type'] extends 'string' | 'tag' | 'color' | 'enum' | 'partRef'
+  ? string
+  : S['type'] extends 'numberList'
+  ? readonly number[][]
+  : ParamValue
 
 /**
  * The typed `ctx.params` bag derived from a part's schema. Because `definePart` infers the schema as a
@@ -1476,10 +1476,21 @@ export interface SnapChain {
   /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share
    *  a group; the two groups never mix. The declarative form of the barrier-family rule. */
   group: string
-  /** names the `number` param giving the rail length (extends along local +X, half-length = length/2) */
-  lengthParam: string
+  /** names the `number` param giving the rail length (extends along local +X, half-length = length/2). Optional when
+   *  both {@link start} and {@link end} are declared. */
+  lengthParam?: string
   /** engage reach in metres - how near a drop must be to chain (a guard rail's ~3 m, a fence's tighter ~1 m) */
   reach: number
+  /** Local `[x, y, z]` of the start (local −X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when
+   *  {@link lengthParam} is set). */
+  start?: [number, number, number]
+  /** Param-driven shifts applied to {@link start} (`axis: 0 | 1 | 2`). */
+  startParams?: SnapParamOffset[]
+  /** Local `[x, y, z]` of the end (local +X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when
+   *  {@link lengthParam} is set). */
+  end?: [number, number, number]
+  /** Param-driven shifts applied to {@link end} (`axis: 0 | 1 | 2`). */
+  endParams?: SnapParamOffset[]
   /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and
    *  toggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts. */
   omitStartParam?: string

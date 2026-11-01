@@ -1,4 +1,4 @@
-import type { SnapChain, SnapEdgeMount, SnapMount, SnapSpec, SnapTile, SnapTrack } from '../parts/partApi'
+import type { SnapChain, SnapEdgeMount, SnapMount, SnapParamOffset, SnapSpec, SnapTile, SnapTrack } from '../parts/partApi'
 
 /**
  * The connector model: what a part's `snap` declaration means to the snap engine (docs/part-snap-connectors.md).
@@ -62,14 +62,14 @@ export function plugsOf(snap: SnapSpec | undefined): readonly Plug[] {
   return out
 }
 
-/**
- * The point on a part that meets the deck edge ({@link SnapEdgeMount.at} moved by its `atParams`), in the part's
- * local frame, at the given params. Shared by the snap (snapFeatures.ts) and the structure connection (structureConnections.ts), which reads
- * the same contact to open the railing, notch the deck and lift the part, so the snap and the cut agree.
- */
-export function edgeMountContact(em: SnapEdgeMount, params: Readonly<Record<string, unknown>>): [number, number, number] {
-  const out: [number, number, number] = [em.at?.[0] ?? 0, em.at?.[1] ?? 0, em.at?.[2] ?? 0]
-  for (const r of em.atParams ?? []) {
+function applyParamOffsets(
+  base: readonly [number, number, number] | undefined,
+  offsets: readonly SnapParamOffset[] | undefined,
+  params: Readonly<Record<string, unknown>>,
+  xBase = 0,
+): [number, number, number] {
+  const out: [number, number, number] = [base ? xBase + base[0] : xBase, base?.[1] ?? 0, base?.[2] ?? 0]
+  for (const r of offsets ?? []) {
     const v = params[r.param]
     if (typeof v !== 'number' || !Number.isFinite(v)) continue
     let d = v * (r.scale ?? 1) + (r.add ?? 0)
@@ -78,4 +78,37 @@ export function edgeMountContact(em: SnapEdgeMount, params: Readonly<Record<stri
     out[r.axis] += d
   }
   return out
+}
+
+/**
+ * The point on a part that meets the deck edge ({@link SnapEdgeMount.at} moved by its `atParams`), in the part's
+ * local frame, at the given params. Shared by the snap (snapFeatures.ts) and the structure connection (structureConnections.ts), which reads
+ * the same contact to open the railing, notch the deck and lift the part, so the snap and the cut agree.
+ */
+export function edgeMountContact(em: SnapEdgeMount, params: Readonly<Record<string, unknown>>): [number, number, number] {
+  return applyParamOffsets(em.at, em.atParams, params)
+}
+
+/**
+ * Local `[x, y, z]` of a `chain` part's start (`-X`) and end (`+X`) link points for `params`:
+ * `[∓length / 2, 0, 0]` from `lengthParam` (when named), shifted by `start` / `end` and `startParams` / `endParams`.
+ * Returns `null` when `lengthParam` is named and missing/non-numeric on `params`, or when neither `lengthParam` nor
+ * both `start` and `end` are declared.
+ */
+export function chainEndpoints(
+  chain: SnapChain,
+  params: Readonly<Record<string, unknown>>,
+): { start: [number, number, number]; end: [number, number, number] } | null {
+  let half = 0
+  if (chain.lengthParam !== undefined) {
+    const len = params[chain.lengthParam]
+    if (typeof len !== 'number' || !Number.isFinite(len)) return null
+    half = len / 2
+  } else if (!chain.start || !chain.end) {
+    return null
+  }
+  return {
+    start: applyParamOffsets(chain.start, chain.startParams, params, -half),
+    end: applyParamOffsets(chain.end, chain.endParams, params, half),
+  }
 }

@@ -846,8 +846,9 @@ The manifest's `snap` declares how the part connects to others:
 - **`tile`** tiles a part edge-to-edge with same-`group` parts (`{ group, lengthParam, widthParam, cornerFlush? }`):
   floor markings, decks. See [part-snap-edges.md](part-snap-edges.md).
 - **`chain`** chains a linear part end-to-end with same-`group` parts
-  (`{ group, lengthParam, reach, omitStartParam?, omitEndParam? }`): barrier collinear-extend and L-corner with a
-  shared post. See [part-snap-chain.md](part-snap-chain.md).
+  (`{ group, lengthParam?, reach, start?, startParams?, end?, endParams?, omitStartParam?, omitEndParam? }`): barrier
+  collinear-extend and L-corner with a shared post, with optional 3D `start`/`end` link points and param shifts. See
+  [part-snap-chain.md](part-snap-chain.md).
 - **`edgeMount`** seats a part on a host deck edge, which the host advertises as a `surfaces` entry of that
   `kind` (`{ accepts, alongParam, reach, outwardOffset?, facing?, at?, atParams?, fromFloor?, opens?, notch?, lift? }`).
   Facing `'along'` (the default) is a barrier on the rim. Facing `'into'` is a flight, ramp or ladder whose `at`

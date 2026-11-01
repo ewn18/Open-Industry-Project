@@ -1825,35 +1825,115 @@
       ]
     },
     "SnapChain": {
-      "description": "End-to-end chaining for a linear part: the barrier snap (guard rails, fences, safety gates). The part\nextends along its local +X (forward), half-length `length/2`. Dropped near a same-{@link group} part, it either\nextends collinearly off the nearer end (facings roughly parallel) or forms a 90-degree L-corner (perpendicular). At an L-corner the two parts share one post, so the snap toggles the\nnamed `omit*Param` booleans to draw it once. The moved part omits its mating post and the\ntarget un-omits the shared end, and the host applies both as one undo entry.",
+      "description": "End-to-end chaining for a linear part (guard rails, fences, safety gates; `docs/part-snap-chain.md`): collinear\nextend or 90-degree L-corner with a shared post toggled via `omit*Param`.",
       "type": "object",
       "properties": {
         "group": {
-          "description": "parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share\na group; the two groups never mix. The declarative form of the barrier-family rule.",
+          "description": "parts chain only with same-group parts (guard rails vs the fence + gate family).",
           "type": "string"
         },
         "lengthParam": {
-          "description": "names the `number` param giving the rail length (extends along local +X, half-length = length/2)",
+          "description": "`number` param giving the rail length along local +X (ends at `±length/2`); optional when `start` and `end` are set.",
           "type": "string"
         },
         "reach": {
           "description": "engage reach in metres - how near a drop must be to chain (a guard rail's ~3 m, a fence's tighter ~1 m)",
           "type": "number"
         },
+        "start": {
+          "description": "Local `[x, y, z]` of the start (−X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when `lengthParam` is set).",
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "startParams": {
+          "description": "Param-driven shifts applied to {@link start} (`axis: 0 | 1 | 2`).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnapParamOffset"
+          }
+        },
+        "end": {
+          "description": "Local `[x, y, z]` of the end (+X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when `lengthParam` is set).",
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "endParams": {
+          "description": "Param-driven shifts applied to {@link end} (`axis: 0 | 1 | 2`).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnapParamOffset"
+          }
+        },
         "omitStartParam": {
-          "description": "Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and\ntoggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts.",
+          "description": "Optional `boolean` param for the start-end (−X) post; set false on collinear extend and toggled at an L-corner.",
           "type": "string"
         },
         "omitEndParam": {
-          "description": "Optional: names the `boolean` param for the end-end (local +X) post - the twin of {@link omitStartParam}.",
+          "description": "Optional `boolean` param for the end-end (+X) post - the twin of {@link omitStartParam}.",
           "type": "string"
         }
       },
       "additionalProperties": false,
       "required": [
         "group",
-        "lengthParam",
         "reach"
+      ]
+    },
+    "SnapParamOffset": {
+      "description": "A param-driven shift of a point, like a link's `offsetParams`: `params[param] × scale + add` (clamped to\n`[min, max]`) is added to the point's `axis` coordinate.",
+      "type": "object",
+      "properties": {
+        "axis": {
+          "enum": [
+            0,
+            1,
+            2
+          ]
+        },
+        "param": {
+          "type": "string"
+        },
+        "scale": {
+          "type": "number"
+        },
+        "add": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "axis",
+        "param"
       ]
     },
     "SnapEdgeMount": {
@@ -1938,39 +2018,6 @@
         "accepts",
         "alongParam",
         "reach"
-      ]
-    },
-    "SnapParamOffset": {
-      "description": "A param-driven shift of a point, like a link's `offsetParams`: `params[param] × scale + add` (clamped to\n`[min, max]`) is added to the point's `axis` coordinate.",
-      "type": "object",
-      "properties": {
-        "axis": {
-          "enum": [
-            0,
-            1,
-            2
-          ]
-        },
-        "param": {
-          "type": "string"
-        },
-        "scale": {
-          "type": "number"
-        },
-        "add": {
-          "type": "number"
-        },
-        "min": {
-          "type": "number"
-        },
-        "max": {
-          "type": "number"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "axis",
-        "param"
       ]
     },
     "HoldsDecl": {

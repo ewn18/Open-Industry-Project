@@ -46,7 +46,13 @@ definePart({
 - **`group`**: the barrier family. Guard rails declare one group, a **fence and a safety gate share another**
   (they chain together), and the two never mix. A new group is a new string, with no engine change.
 - **`lengthParam`**: the linear extent, read from the **instance** param so a resized barrier matches, consistent
-  with [edges](part-snap-edges.md) / [surfaces](part-snap-surfaces.md).
+  with [edges](part-snap-edges.md) / [surfaces](part-snap-surfaces.md). Optional when both `start` and `end` are
+  declared.
+- **`start` / `end` and `startParams` / `endParams`**: local `[x, y, z]` of the start (`−X`) and end (`+X`) link
+  points (default `[0, 0, 0]`, shifted by `∓length/2` on X when `lengthParam` is set), plus optional
+  `SnapParamOffset[]` shifts per axis (`axis: 0 | 1 | 2`, `param`, `scale`, `add`, `min`, `max`). Use these when the
+  link points sit on a non-zero Y or Z plane, at fixed 3D coordinates without `lengthParam`, or track additional
+  size params.
 - **`reach`**: engage distance in metres. The shipped barriers declare two values (a guard rail's loose ~3 m, a
   fence's tight ~1 m). A custom part names its own, so the tighter or looser feel is authored, not hardcoded.
 - **`omitStartParam` / `omitEndParam`**: the boolean params for the two end posts. Omit both for a linear part

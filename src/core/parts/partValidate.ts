@@ -314,18 +314,29 @@ function validateSnap(snap: unknown, problems: PackageProblem[]): void {
     if (typeof chain !== 'object' || chain === null) {
       problems.push({ field: 'snap.chain', message: 'snap.chain must be an object' })
     } else {
-      for (const key of ['group', 'lengthParam'] as const) {
-        const v = (chain as Record<string, unknown>)[key]
-        if (typeof v !== 'string' || !v) {
-          problems.push({ field: `snap.chain.${key}`, message: `chain.${key} must be a non-empty string` })
+      const c = chain as Record<string, unknown>
+      if (typeof c.group !== 'string' || !c.group) {
+        problems.push({ field: 'snap.chain.group', message: 'chain.group must be a non-empty string' })
+      }
+      const hasEnds = c.start !== undefined && c.end !== undefined
+      if (c.lengthParam !== undefined || !hasEnds) {
+        if (typeof c.lengthParam !== 'string' || !c.lengthParam) {
+          problems.push({ field: 'snap.chain.lengthParam', message: 'chain.lengthParam must be a non-empty string (or declare both chain.start and chain.end)' })
         }
       }
-      const reach = (chain as { reach?: unknown }).reach
+      for (const key of ['start', 'end'] as const) {
+        if (c[key] !== undefined && !isVec3(c[key])) {
+          problems.push({ field: `snap.chain.${key}`, message: `chain.${key} must be 3 finite numbers` })
+        }
+      }
+      validateSnapParamOffsets(c.startParams, 'snap.chain.startParams', 'startParams', problems)
+      validateSnapParamOffsets(c.endParams, 'snap.chain.endParams', 'endParams', problems)
+      const reach = c.reach
       if (typeof reach !== 'number' || !Number.isFinite(reach) || reach <= 0) {
         problems.push({ field: 'snap.chain.reach', message: 'chain.reach must be a positive finite number' })
       }
       for (const key of ['omitStartParam', 'omitEndParam'] as const) {
-        const v = (chain as Record<string, unknown>)[key]
+        const v = c[key]
         if (v !== undefined && (typeof v !== 'string' || !v)) {
           problems.push({ field: `snap.chain.${key}`, message: `chain.${key} must be a non-empty param name` })
         }
@@ -407,6 +418,20 @@ function validateSnap(snap: unknown, problems: PackageProblem[]): void {
   })
 }
 
+function validateSnapParamOffsets(raw: unknown, prefix: string, label: string, problems: PackageProblem[]): void {
+  if (raw === undefined) return
+  if (!Array.isArray(raw)) {
+    problems.push({ field: prefix, message: `${label} must be an array` })
+    return
+  }
+  raw.forEach((r: unknown, i: number) => {
+    const ref = r as { axis?: unknown; param?: unknown; scale?: unknown; add?: unknown; min?: unknown; max?: unknown } | null
+    if (!ref || ![0, 1, 2].includes(ref.axis as number)) problems.push({ field: `${prefix}[${i}].axis`, message: `${label} axis must be 0, 1 or 2` })
+    if (!ref || typeof ref.param !== 'string' || !ref.param) problems.push({ field: `${prefix}[${i}].param`, message: `${label} param must be a non-empty param name` })
+    for (const k of ['scale', 'add', 'min', 'max'] as const) if (ref?.[k] !== undefined && !isFiniteNum(ref[k])) problems.push({ field: `${prefix}[${i}].${k}`, message: `${label} ${k} must be a finite number` })
+  })
+}
+
 /** The options an edge mount adds for meeting a deck from the floor and cutting it (SnapEdgeMount). Structure only:
  *  that `fromFloor.param` drives an axis-1 `atParams` entry is checked here too, because the fit is solved from
  *  that entry and silently snaps nowhere without it. Param names are checked with the others (SNAP_PARAM_REFS). */
@@ -418,17 +443,7 @@ function validateEdgeMountReach(em: Record<string, unknown>, problems: PackagePr
   if (em.facing !== undefined && em.facing !== 'along' && !into) add('facing', "edgeMount.facing must be 'along' or 'into'")
   if (em.at !== undefined && !isVec3(em.at)) add('at', 'edgeMount.at must be 3 finite numbers')
   const atParams = em.atParams
-  if (atParams !== undefined) {
-    if (!Array.isArray(atParams)) add('atParams', 'edgeMount.atParams must be an array')
-    else {
-      atParams.forEach((r: unknown, i: number) => {
-        const ref = r as { axis?: unknown; param?: unknown; scale?: unknown; add?: unknown; min?: unknown; max?: unknown } | null
-        if (!ref || ![0, 1, 2].includes(ref.axis as number)) add(`atParams[${i}].axis`, 'atParams axis must be 0, 1 or 2')
-        if (!ref || typeof ref.param !== 'string' || !ref.param) add(`atParams[${i}].param`, 'atParams param must be a non-empty param name')
-        for (const k of ['scale', 'add', 'min', 'max'] as const) if (ref?.[k] !== undefined && !isFiniteNum(ref[k])) add(`atParams[${i}].${k}`, `atParams ${k} must be a finite number`)
-      })
-    }
-  }
+  validateSnapParamOffsets(atParams, 'snap.edgeMount.atParams', 'atParams', problems)
   const fromFloor = em.fromFloor as { param?: unknown } | undefined
   if (fromFloor !== undefined) {
     if (!into) add('fromFloor', "edgeMount.fromFloor needs facing: 'into' (a part standing on the floor climbs INTO the deck)")
@@ -459,6 +474,8 @@ const SNAP_PARAM_REFS: { field: string; type: 'number' | 'boolean'; names: (snap
   { field: 'snap.tile.lengthParam', type: 'number', names: (s) => [sub(sub(s, 'tile'), 'lengthParam')] },
   { field: 'snap.tile.widthParam', type: 'number', names: (s) => [sub(sub(s, 'tile'), 'widthParam')] },
   { field: 'snap.chain.lengthParam', type: 'number', names: (s) => [sub(sub(s, 'chain'), 'lengthParam')] },
+  { field: 'snap.chain.startParams[].param', type: 'number', names: (s) => list(sub(sub(s, 'chain'), 'startParams')).map((r) => sub(r, 'param')) },
+  { field: 'snap.chain.endParams[].param', type: 'number', names: (s) => list(sub(sub(s, 'chain'), 'endParams')).map((r) => sub(r, 'param')) },
   { field: 'snap.chain.omitStartParam', type: 'boolean', names: (s) => [sub(sub(s, 'chain'), 'omitStartParam')] },
   { field: 'snap.chain.omitEndParam', type: 'boolean', names: (s) => [sub(sub(s, 'chain'), 'omitEndParam')] },
   { field: 'snap.edgeMount.alongParam', type: 'number', names: (s) => [sub(sub(s, 'edgeMount'), 'alongParam')] },

@@ -1184,6 +1184,117 @@ describe('custom chain snapping (barrier end-to-end + L-corner parity)', () => {
     const moving = customBarrier('m', 'acme.rail', 99, 99, 0, 2)
     expect(findSnapToTarget(moving, pose(2.3, 0, 0, 0), customBarrier('t', 'acme.fence', 0, 0, 0, 2))).toBeNull()
   })
+
+  it('chains link points offset in all three dimensions (X, Y, Z) for collinear and L-corner snaps', () => {
+    // A barrier whose link points sit off-centre on Z (+0.4) and elevated in Y (start at +0.2, end at +0.6),
+    // with a 0.05 m X inset from ±length/2.
+    registerPackage({
+      format: PACKAGE_FORMAT,
+      id: 'acme.offset-chain',
+      name: 'Offset Chain',
+      params: {
+        length: { type: 'number', default: 2 },
+        omitPostStart: { type: 'boolean', default: false },
+        omitPostEnd: { type: 'boolean', default: false },
+      },
+      behavior: 'definePart({ step(){} })',
+      geometry: { kind: 'drawn', bounds: { length: 2, width: 1, top: 1 } },
+      snap: {
+        chain: {
+          group: 'offsetGroup',
+          lengthParam: 'length',
+          reach: SNAP_VISIBLE_THRESHOLD,
+          start: [0.05, 0.2, 0.4],
+          end: [-0.05, 0.6, 0.4],
+          omitStartParam: 'omitPostStart',
+          omitEndParam: 'omitPostEnd',
+        },
+      },
+    } as unknown as PartPackage)
+    const mk = (id: string, x: number, y: number, z: number, rot = 0): SdkPart =>
+      ({ id, type: 'part', packageId: 'acme.offset-chain', position: [x, y, z], rotationY: rot, params: { length: 2, omitPostStart: false, omitPostEnd: false } }) as unknown as SdkPart
+
+    // Target at origin (yaw 0): start link is at (-0.95, 0.2, 0.4), end link is at (0.95, 0.6, 0.4).
+    const target = mk('t', 0, 0, 0, 0)
+
+    // Collinear extend off target's +X end (same facing): mover's start (-0.95, 0.2, 0.4) mates to target's end (0.95, 0.6, 0.4),
+    // placing mover origin at (1.9, 0.4, 0).
+    const col = findSnap(mk('m', 99, 0, 99), pose(2.0, 0.45, 0.05, 0.02), [target])
+    expect(col).not.toBeNull()
+    expect(col!.pose.position[0]).toBeCloseTo(1.9, 9)
+    expect(col!.pose.position[1]).toBeCloseTo(0.4, 9)
+    expect(col!.pose.position[2]).toBeCloseTo(0, 9)
+    expect(col!.junction).toEqual({ x: 0.95, y: 0.6, z: 0.4 })
+
+    // Collinear extend with mover flipped 180° (yaw π): mover's end (0.95, 0.6, 0.4 in local -> (-0.95, 0.6, -0.4) at yaw π)
+    // mates to target's end (0.95, 0.6, 0.4), placing mover origin at (1.9, 0, 0.8).
+    const colFlip = findSnap(mk('m', 99, 0, 99), pose(2.0, 0.05, 0.75, Math.PI - 0.02), [target])
+    expect(colFlip).not.toBeNull()
+    expect(colFlip!.pose.position[0]).toBeCloseTo(1.9, 9)
+    expect(colFlip!.pose.position[1]).toBeCloseTo(0, 9)
+    expect(colFlip!.pose.position[2]).toBeCloseTo(0.8, 9)
+    expect(colFlip!.junction).toEqual({ x: 0.95, y: 0.6, z: 0.4 })
+
+    // L-corner at target's +X end (0.95, 0.6, 0.4) with mover at yaw +π/2 (forward = (0, -1)):
+    // mating mover's start (-0.95, 0.2, 0.4), whose world offset at yaw +π/2 is (0.4, 0.2, 0.95),
+    // places mover origin at (0.95 - 0.4, 0.6 - 0.2, 0.4 - 0.95) = (0.55, 0.4, -0.55).
+    const corner = findSnap(mk('m', 99, 0, 99), pose(0.6, 0.4, -0.5, Math.PI / 2 - 0.05), [target])
+    expect(corner).not.toBeNull()
+    expect(corner!.pose.rotationY).toBeCloseTo(Math.PI / 2, 9)
+    expect(corner!.pose.position[0]).toBeCloseTo(0.55, 9)
+    expect(corner!.pose.position[1]).toBeCloseTo(0.4, 9)
+    expect(corner!.pose.position[2]).toBeCloseTo(-0.55, 9)
+    expect(corner!.junction).toEqual({ x: 0.95, y: 0.6, z: 0.4 })
+    expect(corner!.paramOverrides).toEqual({ omitPostStart: true, omitPostEnd: false })
+    expect(corner!.targetParamOverrides).toEqual({ omitPostEnd: false })
+  })
+
+  it('supports fixed start/end without lengthParam and parametric startParams/endParams shifts', () => {
+    registerPackage({
+      format: PACKAGE_FORMAT,
+      id: 'acme.param-chain',
+      name: 'Param Chain',
+      params: {
+        span: { type: 'number', default: 3 },
+        depth: { type: 'number', default: 0.6 },
+        elevation: { type: 'number', default: 0.5 },
+      },
+      behavior: 'definePart({ step(){} })',
+      geometry: { kind: 'drawn', bounds: { length: 3, width: 0.6, top: 1 } },
+      snap: {
+        chain: {
+          group: 'paramChain',
+          reach: SNAP_VISIBLE_THRESHOLD,
+          start: [0, 0, 0],
+          startParams: [
+            { axis: 0, param: 'span', scale: -0.5 },
+            { axis: 1, param: 'elevation', scale: 1 },
+            { axis: 2, param: 'depth', scale: 0.5 },
+          ],
+          end: [0, 0, 0],
+          endParams: [
+            { axis: 0, param: 'span', scale: 0.5 },
+            { axis: 1, param: 'elevation', scale: 1 },
+            { axis: 2, param: 'depth', scale: 0.5 },
+          ],
+        },
+      },
+    } as unknown as PartPackage)
+    const mk = (id: string, x: number, y: number, z: number, span = 3, depth = 0.6, elevation = 0.5): SdkPart =>
+      ({ id, type: 'part', packageId: 'acme.param-chain', position: [x, y, z], rotationY: 0, params: { span, depth, elevation } }) as unknown as SdkPart
+
+    // Target with span=3, depth=0.6, elevation=0.5 has end at (1.5, 0.5, 0.3).
+    // Mover with span=2, depth=1.0, elevation=0.2 has start at (-1.0, 0.2, 0.5).
+    // Mating mover start to target end puts mover origin at (2.5, 0.3, -0.2).
+    const target = mk('t', 0, 0, 0, 3, 0.6, 0.5)
+    const moving = mk('m', 99, 0, 99, 2, 1.0, 0.2)
+    const snap = findSnap(moving, pose(2.6, 0.3, -0.15, 0), [target])
+    expect(snap).not.toBeNull()
+    expect(snap!.pose.position[0]).toBeCloseTo(2.5, 9)
+    expect(snap!.pose.position[1]).toBeCloseTo(0.3, 9)
+    expect(snap!.pose.position[2]).toBeCloseTo(-0.2, 9)
+    expect(snap!.junction).toEqual({ x: 1.5, y: 0.5, z: 0.3 })
+  })
 })
 
 // a custom barrier seating along a host deck edge (definePart({ snap: { edgeMount } })), and a custom platform
