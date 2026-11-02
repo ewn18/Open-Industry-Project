@@ -241,9 +241,14 @@ function solvePlug(
       return
     }
     case 'line': {
-      // peer: chains end-to-end / at an L-corner with a same-group chain part (barriers)
+      // peer: chains end-to-end / at an L-corner with a same-group chain part (barriers, pipes)
       const theirs = snapOf(target)?.chain
-      if (theirs) offer(snapChain(moving, proposed, target, plug.chain, theirs), 'chain -> chain')
+      if (!theirs) return
+      if (Array.isArray(theirs)) {
+        theirs.forEach((tc, i) => offer(snapChain(moving, proposed, target, plug.chain, tc), `${plug.label} -> chain[${i}]`))
+      } else {
+        offer(snapChain(moving, proposed, target, plug.chain, theirs), `${plug.label} -> chain`)
+      }
       return
     }
     case 'edgeSeat':

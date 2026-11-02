@@ -41,6 +41,7 @@ export function validatePartPackage(pkg: unknown): PackageProblem[] {
   }
   validateSnap((p as { snap?: unknown } | undefined)?.snap, problems)
   validateConveyor(p as Record<string, unknown> | undefined, problems)
+  validateFluid((p as { fluid?: unknown } | undefined)?.fluid, problems)
   validateSetpoints(p?.params, problems)
   validateTagSignals(p?.params, problems)
   validateAttributes(p?.params, problems)
@@ -311,36 +312,11 @@ function validateSnap(snap: unknown, problems: PackageProblem[]): void {
   }
   const chain = (snap as { chain?: unknown }).chain
   if (chain !== undefined) {
-    if (typeof chain !== 'object' || chain === null) {
-      problems.push({ field: 'snap.chain', message: 'snap.chain must be an object' })
+    if (Array.isArray(chain)) {
+      if (chain.length === 0) problems.push({ field: 'snap.chain', message: 'snap.chain must not be empty' })
+      chain.forEach((entry, i) => validateSnapChainEntry(entry, `snap.chain[${i}]`, problems))
     } else {
-      const c = chain as Record<string, unknown>
-      if (typeof c.group !== 'string' || !c.group) {
-        problems.push({ field: 'snap.chain.group', message: 'chain.group must be a non-empty string' })
-      }
-      const hasEnds = c.start !== undefined && c.end !== undefined
-      if (c.lengthParam !== undefined || !hasEnds) {
-        if (typeof c.lengthParam !== 'string' || !c.lengthParam) {
-          problems.push({ field: 'snap.chain.lengthParam', message: 'chain.lengthParam must be a non-empty string (or declare both chain.start and chain.end)' })
-        }
-      }
-      for (const key of ['start', 'end'] as const) {
-        if (c[key] !== undefined && !isVec3(c[key])) {
-          problems.push({ field: `snap.chain.${key}`, message: `chain.${key} must be 3 finite numbers` })
-        }
-      }
-      validateSnapParamOffsets(c.startParams, 'snap.chain.startParams', 'startParams', problems)
-      validateSnapParamOffsets(c.endParams, 'snap.chain.endParams', 'endParams', problems)
-      const reach = c.reach
-      if (typeof reach !== 'number' || !Number.isFinite(reach) || reach <= 0) {
-        problems.push({ field: 'snap.chain.reach', message: 'chain.reach must be a positive finite number' })
-      }
-      for (const key of ['omitStartParam', 'omitEndParam'] as const) {
-        const v = c[key]
-        if (v !== undefined && (typeof v !== 'string' || !v)) {
-          problems.push({ field: `snap.chain.${key}`, message: `chain.${key} must be a non-empty param name` })
-        }
-      }
+      validateSnapChainEntry(chain, 'snap.chain', problems)
     }
   }
   const edgeMount = (snap as { edgeMount?: unknown }).edgeMount
@@ -432,6 +408,40 @@ function validateSnapParamOffsets(raw: unknown, prefix: string, label: string, p
   })
 }
 
+function validateSnapChainEntry(chain: unknown, prefix: string, problems: PackageProblem[]): void {
+  if (typeof chain !== 'object' || chain === null || Array.isArray(chain)) {
+    problems.push({ field: prefix, message: 'snap.chain must be an object' })
+    return
+  }
+  const c = chain as Record<string, unknown>
+  if (typeof c.group !== 'string' || !c.group) {
+    problems.push({ field: `${prefix}.group`, message: 'chain.group must be a non-empty string' })
+  }
+  const hasEnds = c.start !== undefined && c.end !== undefined
+  if (c.lengthParam !== undefined || !hasEnds) {
+    if (typeof c.lengthParam !== 'string' || !c.lengthParam) {
+      problems.push({ field: `${prefix}.lengthParam`, message: 'chain.lengthParam must be a non-empty string (or declare both chain.start and chain.end)' })
+    }
+  }
+  for (const key of ['start', 'end'] as const) {
+    if (c[key] !== undefined && !isVec3(c[key])) {
+      problems.push({ field: `${prefix}.${key}`, message: `chain.${key} must be 3 finite numbers` })
+    }
+  }
+  validateSnapParamOffsets(c.startParams, `${prefix}.startParams`, 'startParams', problems)
+  validateSnapParamOffsets(c.endParams, `${prefix}.endParams`, 'endParams', problems)
+  const reach = c.reach
+  if (typeof reach !== 'number' || !Number.isFinite(reach) || reach <= 0) {
+    problems.push({ field: `${prefix}.reach`, message: 'chain.reach must be a positive finite number' })
+  }
+  for (const key of ['omitStartParam', 'omitEndParam'] as const) {
+    const v = c[key]
+    if (v !== undefined && (typeof v !== 'string' || !v)) {
+      problems.push({ field: `${prefix}.${key}`, message: `chain.${key} must be a non-empty param name` })
+    }
+  }
+}
+
 /** The options an edge mount adds for meeting a deck from the floor and cutting it (SnapEdgeMount). Structure only:
  *  that `fromFloor.param` drives an axis-1 `atParams` entry is checked here too, because the fit is solved from
  *  that entry and silently snaps nowhere without it. Param names are checked with the others (SNAP_PARAM_REFS). */
@@ -462,6 +472,7 @@ function validateEdgeMountReach(em: Record<string, unknown>, problems: PackagePr
 /** safe descent into an unknown blob - the file's house style, so the ref table below needs no `any` */
 const sub = (v: unknown, key: string): unknown => (v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined)
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const oneOrList = (v: unknown): unknown[] => (Array.isArray(v) ? v : v && typeof v === 'object' ? [v] : [])
 
 /** every snap field that names a param, with the param type it must name - the table validateSnapParamRefs walks */
 const SNAP_PARAM_REFS: { field: string; type: 'number' | 'boolean'; names: (snap: unknown) => unknown[] }[] = [
@@ -473,11 +484,11 @@ const SNAP_PARAM_REFS: { field: string; type: 'number' | 'boolean'; names: (snap
   { field: 'snap.surfaces[].heightParam', type: 'number', names: (s) => list(sub(s, 'surfaces')).map((x) => sub(x, 'heightParam')) },
   { field: 'snap.tile.lengthParam', type: 'number', names: (s) => [sub(sub(s, 'tile'), 'lengthParam')] },
   { field: 'snap.tile.widthParam', type: 'number', names: (s) => [sub(sub(s, 'tile'), 'widthParam')] },
-  { field: 'snap.chain.lengthParam', type: 'number', names: (s) => [sub(sub(s, 'chain'), 'lengthParam')] },
-  { field: 'snap.chain.startParams[].param', type: 'number', names: (s) => list(sub(sub(s, 'chain'), 'startParams')).map((r) => sub(r, 'param')) },
-  { field: 'snap.chain.endParams[].param', type: 'number', names: (s) => list(sub(sub(s, 'chain'), 'endParams')).map((r) => sub(r, 'param')) },
-  { field: 'snap.chain.omitStartParam', type: 'boolean', names: (s) => [sub(sub(s, 'chain'), 'omitStartParam')] },
-  { field: 'snap.chain.omitEndParam', type: 'boolean', names: (s) => [sub(sub(s, 'chain'), 'omitEndParam')] },
+  { field: 'snap.chain.lengthParam', type: 'number', names: (s) => oneOrList(sub(s, 'chain')).map((c) => sub(c, 'lengthParam')) },
+  { field: 'snap.chain.startParams[].param', type: 'number', names: (s) => oneOrList(sub(s, 'chain')).flatMap((c) => list(sub(c, 'startParams')).map((r) => sub(r, 'param'))) },
+  { field: 'snap.chain.endParams[].param', type: 'number', names: (s) => oneOrList(sub(s, 'chain')).flatMap((c) => list(sub(c, 'endParams')).map((r) => sub(r, 'param'))) },
+  { field: 'snap.chain.omitStartParam', type: 'boolean', names: (s) => oneOrList(sub(s, 'chain')).map((c) => sub(c, 'omitStartParam')) },
+  { field: 'snap.chain.omitEndParam', type: 'boolean', names: (s) => oneOrList(sub(s, 'chain')).map((c) => sub(c, 'omitEndParam')) },
   { field: 'snap.edgeMount.alongParam', type: 'number', names: (s) => [sub(sub(s, 'edgeMount'), 'alongParam')] },
   { field: 'snap.edgeMount.atParams[].param', type: 'number', names: (s) => list(sub(sub(s, 'edgeMount'), 'atParams')).map((r) => sub(r, 'param')) },
   { field: 'snap.edgeMount.fromFloor.param', type: 'number', names: (s) => [sub(sub(sub(s, 'edgeMount'), 'fromFloor'), 'param')] },
@@ -720,6 +731,19 @@ function validateConveyor(p: Record<string, unknown> | undefined, problems: Pack
       need(geo.kind === 'rig' && deck?.shape?.kind === 'cylinder', "a 'turntable' bed turns: a rig with a revolute joint whose link is a cylinder (the deck; its rim is where neighbours butt)")
       return
     }
+  }
+}
+
+/** Validate the optional 1D fluid network declaration ({@link FluidSpec}). */
+function validateFluid(fluid: unknown, problems: PackageProblem[]): void {
+  if (fluid === undefined) return
+  if (!fluid || typeof fluid !== 'object' || Array.isArray(fluid)) {
+    problems.push({ field: 'fluid', message: "fluid must be an object: { role: 'pump' | 'pipe' }" })
+    return
+  }
+  const role = (fluid as { role?: unknown }).role
+  if (role !== 'pump' && role !== 'pipe') {
+    problems.push({ field: 'fluid.role', message: `fluid.role must be 'pump' or 'pipe' (got ${JSON.stringify(role)})` })
   }
 }
 

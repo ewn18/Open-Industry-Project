@@ -162,6 +162,8 @@ export function validatePart(manifest: PackageManifest, behaviorSource: string):
     diagnostics.push({ kind: 'package', message: "exposes: retired with PLC tag scoping; a part's PLC interface is its 'tag' params, wired by name. Remove it" })
   }
   if (manifest.conveyor !== undefined) pkg.conveyor = manifest.conveyor // what kind of conveyor it is (declared, not inferred)
+  if (manifest.fluid !== undefined) pkg.fluid = manifest.fluid
+  else if (decl.fluid !== undefined) pkg.fluid = decl.fluid
   if (manifest.commsParam !== undefined) pkg.commsParam = manifest.commsParam // the param that switches its PLC link
   if (manifest.holds !== undefined) pkg.holds = manifest.holds // the cargo it stores on its grippers
   // cargo with its own body (core/cargoBody.ts): checked at default params, where the author can act on it. A stored

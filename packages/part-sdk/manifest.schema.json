@@ -41,6 +41,10 @@
       "description": "what kind of conveyor this part is, if any ({@link ConveyorDecl})",
       "$ref": "#/$defs/ConveyorDecl"
     },
+    "fluid": {
+      "description": "1D hydraulic fluid network participation ({@link FluidSpec})",
+      "$ref": "#/$defs/FluidSpec"
+    },
     "commsParam": {
       "description": "the boolean param that switches this part's PLC link (see {@link PartPackage.commsParam})",
       "type": "string"
@@ -1633,16 +1637,32 @@
         "surface"
       ]
     },
+    "FluidSpec": {
+      "description": "Declares that a part participates in the 1D hydraulic fluid network. Fluid port positions are taken\ndirectly from the part's `snap.chain` endpoints (no duplicate port coordinates):\n- `'pump'`: an active pressure/flow source driven by `ctx.setFluid({ rpm, maxRpm, gpmPerRpm, maxHeadPsi })`.\n  Its first chain `start` (or `chain[0]`) is the intake (suction) port; its `end` (or `chain[1]`) is the discharge port.\n- `'pipe'`: a passive conduit whose inner diameter (`pipeId`, inches), `length` (m), `fluidSupply` (intake source)\n  and `openEnd` (free-flow vs. capped unconnected end) are set via `ctx.setFluid(...)`.",
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "pump",
+            "pipe"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role"
+      ]
+    },
     "SnapSpec": {
       "description": "A part's declarative snap features: the connection geometry the host's snap engine\nmatches across parts, supplied as static self-description instead of being inferred. Covers {@link SnapMount}\n(a device mounting onto a host surface), {@link SnapTrack} (a blade-stop-style seat onto a roller bed),\n{@link SnapSurface} (a surface other parts mount onto - the host half), {@link SnapTile} (edge-to-edge\nstructural tiling - floor markings, decks), {@link SnapChain} (end-to-end chaining of a linear part -\nbarriers), and {@link SnapEdgeMount} (seating along a host deck edge - a barrier on a platform rim). Every\nkind compiles to the same connector model: plugs on the dragged part, sockets on the\nhost, matched by kind, solved per (plug shape, socket shape), and ranked by one rule.",
       "type": "object",
       "properties": {
         "flush": {
-          "description": "Ambient face-flush: dragged near another part, this part's footprint box sits flush against that\npart's nearest vertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face,\nheight untouched). Declare it on parts that get tiled - crates, pallets, racks - where flush-beside-\nthe-last-one is wanted on nearly every drop (it compounds with Shift-drag duplicate into rapid row\nbuilding). Ambient snapping is always declared intent, never inferred: a part without this flag never\nflushes on its own - the editor's hold-B Face mode is the explicit, universal alternative.",
+          "description": "Ambient face-flush: dragged near another part, this part's footprint box sits flush against that part's nearest\nvertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched).",
           "type": "boolean"
         },
         "mounts": {
-          "description": "Points this part lands onto a compatible host surface (sensors, diverters, …).\n\nEvery entry is tried against each candidate host and the best-fitting one is used (a body overlapping the\nhost first, then lowest cost - the same rule that ranks one host against another), so declaration order\ndoes not decide. Since {@link SnapMount.accepts} names one surface kind, several entries are how a device\nsays it can seat on more than one kind of host: a sensor that mounts on a conveyor's guard rail\n(`'conveyorGuard'`) or, failing that, flat on a bracket (`'face'`), is two mounts.",
+          "description": "Points this part lands onto a compatible host surface (sensors, diverters, …). Every entry is tried against each\ncandidate host and the best-fitting one is used, so declaration order does not decide.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SnapMount"
@@ -1653,7 +1673,7 @@
           "$ref": "#/$defs/SnapTrack"
         },
         "surfaces": {
-          "description": "surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on;\na deck a barrier seats along)",
+          "description": "surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on; a deck a barrier seats along)",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SnapSurface"
@@ -1664,11 +1684,21 @@
           "$ref": "#/$defs/SnapTile"
         },
         "chain": {
-          "description": "end-to-end chaining of a linear part with same-group parts (barriers: collinear extend + L-corner)",
-          "$ref": "#/$defs/SnapChain"
+          "description": "end-to-end chaining of a linear part with same-group parts (one chain or an array of chains for multi-port parts)",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SnapChain"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SnapChain"
+              }
+            }
+          ]
         },
         "edgeMount": {
-          "description": "seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it, a gate set\ninto its railing ({@link SnapEdgeMount})",
+          "description": "seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it ({@link SnapEdgeMount})",
           "$ref": "#/$defs/SnapEdgeMount"
         }
       },
@@ -1825,15 +1855,15 @@
       ]
     },
     "SnapChain": {
-      "description": "End-to-end chaining for a linear part (guard rails, fences, safety gates; `docs/part-snap-chain.md`): collinear\nextend or 90-degree L-corner with a shared post toggled via `omit*Param`.",
+      "description": "End-to-end chaining for a linear part: the barrier snap (guard rails, fences, safety gates). The part\nextends along its local +X (forward), half-length `length/2`. Dropped near a same-{@link group} part, it either\nextends collinearly off the nearer end (facings roughly parallel) or forms a 90-degree L-corner (perpendicular). At an L-corner the two parts share one post, so the snap toggles the\nnamed `omit*Param` booleans to draw it once. The moved part omits its mating post and the\ntarget un-omits the shared end, and the host applies both as one undo entry.",
       "type": "object",
       "properties": {
         "group": {
-          "description": "parts chain only with same-group parts (guard rails vs the fence + gate family).",
+          "description": "parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share a group",
           "type": "string"
         },
         "lengthParam": {
-          "description": "`number` param giving the rail length along local +X (ends at `±length/2`); optional when `start` and `end` are set.",
+          "description": "names the `number` param giving the rail length (extends along local +X, half-length = length/2). Optional when both {@link start} and {@link end} are declared.",
           "type": "string"
         },
         "reach": {
@@ -1841,7 +1871,7 @@
           "type": "number"
         },
         "start": {
-          "description": "Local `[x, y, z]` of the start (−X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when `lengthParam` is set).",
+          "description": "Local `[x, y, z]` of the start (local −X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when {@link lengthParam} is set).",
           "type": "array",
           "prefixItems": [
             {
@@ -1865,7 +1895,7 @@
           }
         },
         "end": {
-          "description": "Local `[x, y, z]` of the end (+X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when `lengthParam` is set).",
+          "description": "Local `[x, y, z]` of the end (local +X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when {@link lengthParam} is set).",
           "type": "array",
           "prefixItems": [
             {
@@ -1889,11 +1919,11 @@
           }
         },
         "omitStartParam": {
-          "description": "Optional `boolean` param for the start-end (−X) post; set false on collinear extend and toggled at an L-corner.",
+          "description": "Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once.",
           "type": "string"
         },
         "omitEndParam": {
-          "description": "Optional `boolean` param for the end-end (+X) post - the twin of {@link omitStartParam}.",
+          "description": "Optional: names the `boolean` param for the end-end (local +X) post - the twin of {@link omitStartParam}.",
           "type": "string"
         }
       },

@@ -929,6 +929,50 @@ export interface ConveyorDecl {
   frictionParam?: string
 }
 
+/**
+ * Declares that a part participates in the 1D hydraulic fluid network. Fluid port positions are taken
+ * directly from the part's `snap.chain` endpoints (no duplicate port coordinates):
+ * - `'pump'`: an active pressure/flow source driven by `ctx.setFluid({ rpm, maxRpm, gpmPerRpm, maxHeadPsi })`.
+ *   Its first chain `start` (or `chain[0]`) is the intake (suction) port; its `end` (or `chain[1]`) is the discharge port.
+ * - `'pipe'`: a passive conduit whose inner diameter (`pipeId`, inches), `length` (m), `fluidSupply` (intake source)
+ *   and `openEnd` (free-flow vs. capped unconnected end) are set via `ctx.setFluid(...)`.
+ */
+export interface FluidSpec {
+  role: 'pump' | 'pipe'
+}
+
+/** Per-tick hydraulic parameters handed to `ctx.setFluid(cmd)` by a pump or pipe behavior script. */
+export interface FluidCommand {
+  /** current shaft speed (RPM) for a `'pump'` part */
+  rpm?: number
+  /** rated shaft speed at 100% command (RPM) for a `'pump'` part */
+  maxRpm?: number
+  /** volumetric capacity factor (GPM per RPM) for a `'pump'` part */
+  gpmPerRpm?: number
+  /** shutoff head pressure (PSI at 0 GPM and 100% RPM) for a `'pump'` part */
+  maxHeadPsi?: number
+  /** inner diameter in inches for a `'pipe'` part (default 4) */
+  pipeId?: number
+  /** hydraulic length in metres for a `'pipe'` part (default 1) */
+  length?: number
+  /** when true on a `'pipe'` part, acts as an infinite fluid supply source on a pump's intake line */
+  fluidSupply?: boolean
+  /** when true on a `'pipe'` part, an unconnected port on this pipe free-flows; when false (default), an unconnected port is capped and pressurizes */
+  openEnd?: boolean
+}
+
+/** Live solved 1D hydraulic state read by `ctx.fluid()` on a pump or pipe part. */
+export interface FluidReading {
+  /** gauge pressure at this part (PSI) */
+  pressure: number
+  /** volumetric flow rate through this part (GPM) */
+  flow: number
+  /** average fluid velocity in ft/s (`0.4085 * flow / pipeId^2`) */
+  velocity: number
+  /** true when this part is connected to an active `fluidSupply` source */
+  supplied: boolean
+}
+
 export interface PartPackage {
   /** package format version, the literal of PACKAGE_FORMAT (spelled out, not `typeof`: the generated SDK carries
    *  this file's types but not its constants). A stored package of an older one is carried forward by
@@ -965,6 +1009,8 @@ export interface PartPackage {
   snap?: SnapSpec
   /** what kind of conveyor this part is, if any ({@link ConveyorDecl}) */
   conveyor?: ConveyorDecl
+  /** 1D hydraulic fluid network participation ({@link FluidSpec}) */
+  fluid?: FluidSpec
   /** the `boolean` param that switches this part's PLC link: while it is false the part's tags are disconnected
    *  (it runs on its authored params), and the PLC panel's comms toggle writes it. Usually omitted: a part without
    *  one is connected by each tag field that names a tag, and an empty field is a signal left unconnected, which is
@@ -1203,6 +1249,8 @@ export interface PackageManifest {
   thumbnail?: string
   /** what kind of conveyor this part is, if any ({@link ConveyorDecl}) */
   conveyor?: ConveyorDecl
+  /** 1D hydraulic fluid network participation ({@link FluidSpec}) */
+  fluid?: FluidSpec
   /** the boolean param that switches this part's PLC link (see {@link PartPackage.commsParam}) */
   commsParam?: string
   /** how this part connects to others: the snap engine's connectors ({@link SnapSpec}). Structure, like the rig: it
@@ -1235,6 +1283,7 @@ export function manifestOfPackage(pkg: PartPackage): PackageManifest {
     ...(pkg.materials !== undefined ? { materials: pkg.materials } : {}),
     ...(pkg.thumbnail !== undefined ? { thumbnail: pkg.thumbnail } : {}),
     ...(pkg.conveyor !== undefined ? { conveyor: pkg.conveyor } : {}),
+    ...(pkg.fluid !== undefined ? { fluid: pkg.fluid } : {}),
     ...(pkg.commsParam !== undefined ? { commsParam: pkg.commsParam } : {}),
     ...(pkg.snap !== undefined ? { snap: pkg.snap } : {}),
     ...(pkg.holds !== undefined ? { holds: pkg.holds } : {}),

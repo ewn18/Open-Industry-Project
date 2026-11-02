@@ -26,7 +26,7 @@ import { canonicalAddress } from '../core/io/iecAddress'
 import { instantiatePartScript, resolvePartParams } from '../core/parts/partScript'
 import { Rng } from '../core/rng'
 import { arrayInstanceDeltas, copyGripName, jointLimits, type PosableArraySpec, type RigParams, type SubPose } from '../core/rig/rigPose'
-import type { RigJoint } from '../core/parts/partPackage'
+import type { FluidCommand, FluidReading, FluidSpec, RigJoint } from '../core/parts/partPackage'
 import {
   axisCommandAborted, axisCommandDone, axisCommandQueued, axisFollow, axisHalt, axisHome, axisInPosition, axisMoveAbsolute, axisMoveRelative, axisMoveVelocity,
   axisPosition, axisPower, axisReleaseStop, axisReset, axisStop, createAxis, stepAxis, type Axis, type ModuloDirection,
@@ -58,6 +58,7 @@ interface Instance {
     arc: { cx: number; cz: number; omega: number } | null
     deckSpeed: number | number[] | null
     copySpeeds: Record<string, number[]> | null
+    fluid: FluidCommand | null
   }
   /** host tag tables held by reference (never copied): cur = this tick's, prev = last tick's (backs
    *  ctx.rising/falling), driven = the controller's output-ownership set. Safe to share because hosts
@@ -81,6 +82,8 @@ interface Instance {
   /** holder for the scene's live conveyor speeds (partId → commanded speed), so ctx.conveyorRunning(id) - the
    *  spawner interlock - reads whether a referenced conveyor is running. Reference-swapped each tick (not copied). */
   inConveyorSpeeds: { v: Record<string, number> }
+  /** holder for this part's solved 1D hydraulic state from the previous tick (ctx.fluid). Reference-swapped each tick. */
+  inFluid: { v: FluidReading }
   /** the rig's servo axes by joint name: commanded through ctx.servos, stepped after step(), posing their joints */
   servos: Map<string, Axis>
 }
@@ -92,6 +95,7 @@ type TagVal = number | boolean
 type BeamHit = { hit: boolean; distance: number; color: [number, number, number]; marks?: Readonly<Record<string, CargoMark>> }
 const CLEAR_BEAM: BeamHit = { hit: false, distance: 0, color: [0, 0, 0] }
 const EMPTY_SPEEDS: Record<string, number> = {} // shared empty conveyor-speed map (scene has no conveyors this tick)
+const NO_FLUID: FluidReading = Object.freeze({ pressure: 0, flow: 0, velocity: 0, supplied: false })
 // Cap on a published display string. A display crosses the worker boundary every tick it changes, so an
 // unbounded string is a per-tick postMessage cost a part could set arbitrarily high; a panel field that
 // needs more than this has outgrown a readout.
@@ -272,6 +276,8 @@ export interface BehaviorInput {
   /** the scene's live conveyor speeds (partId → commanded m/s or arc omega), for ctx.conveyorRunning(id) - the
    *  spawner "pause when conveyor stopped" interlock. Absent when the scene has no conveyors. */
   conveyorSpeeds?: Record<string, number>
+  /** this part's solved 1D hydraulic state from the previous tick (ctx.fluid). Absent when not a fluid part. */
+  fluid?: FluidReading
 }
 
 /**
@@ -305,6 +311,8 @@ export interface BehaviorOutput {
   /** ctx.setSurfaceSpeed(speed, link, i): each copy of a posable conveying array at its own speed along its own
    *  local +X, by link, in copy order (0 = stopped). Present only when commanded this tick. */
   copySpeeds?: Record<string, number[]>
+  /** ctx.setFluid: 1D hydraulic pump/pipe parameters commanded this tick. Present only when commanded. */
+  fluid?: FluidCommand
 }
 
 const instances = new Map<number, Instance>()
@@ -395,6 +403,7 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
       arc: null as { cx: number; cz: number; omega: number } | null,
       deckSpeed: null as number | number[] | null,
       copySpeeds: null as Record<string, number[]> | null,
+      fluid: null as FluidCommand | null,
     }
     // host tag tables by reference (cur = this tick, prev = last tick, driven = output ownership) - the
     // ctx closures below read through this box, so stepDirect retargets the references each tick (same
@@ -414,6 +423,7 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
     }
     const inUsed = { used: false }
     const inConveyorSpeeds: { v: Record<string, number> } = { v: EMPTY_SPEEDS } // ref-swapped each tick from input
+    const inFluid: { v: FluidReading } = { v: NO_FLUID } // ref-swapped each tick from input
     // Persistent last-commanded pose, separate from `out` (which carries only this tick's commands). Declared
     // joints/grippers seed to their rest state (0 / open) so reading a declared name never returns undefined -
     // `ctx.joints.shoulder` reflects what the part last commanded. The host-applied (clamped) pose is a
@@ -711,6 +721,30 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
         const s = inConveyorSpeeds.v[id]
         return s === undefined ? true : s !== 0 // dangling / non-conveyor ⇒ inert; only a real stopped conveyor ⇒ false
       },
+      setFluid: (cmd) => {
+        if (typeof cmd !== 'object' || cmd === null) return
+        const c = (out.fluid ??= {})
+        const rpm = finiteOrUndef(cmd.rpm)
+        if (rpm !== undefined && rpm >= 0) c.rpm = rpm
+        const maxRpm = finiteOrUndef(cmd.maxRpm)
+        if (maxRpm !== undefined && maxRpm > 0) c.maxRpm = maxRpm
+        const gpmPerRpm = finiteOrUndef(cmd.gpmPerRpm)
+        if (gpmPerRpm !== undefined && gpmPerRpm >= 0) c.gpmPerRpm = gpmPerRpm
+        const maxHeadPsi = finiteOrUndef(cmd.maxHeadPsi)
+        if (maxHeadPsi !== undefined && maxHeadPsi >= 0) c.maxHeadPsi = maxHeadPsi
+        const pipeId = finiteOrUndef(cmd.pipeId)
+        if (pipeId !== undefined && pipeId > 0) c.pipeId = pipeId
+        const length = finiteOrUndef(cmd.length)
+        if (length !== undefined && length > 0) c.length = length
+        const fluidSupply = cmd.fluidSupply
+        if (typeof fluidSupply === 'boolean') c.fluidSupply = fluidSupply
+        const openEnd = cmd.openEnd
+        if (typeof openEnd === 'boolean') c.openEnd = openEnd
+      },
+      fluid: () => {
+        const f = inFluid.v
+        return { pressure: f.pressure, flow: f.flow, velocity: f.velocity, supplied: f.supplied }
+      },
       spawn: (opts) => {
         if (out.spawns.length >= MAX_SPAWNS_PER_TICK) return
         const req: SpawnReq = {}
@@ -755,7 +789,7 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
     // gave (a joint, a lamp), so an author's "start pose" would silently never happen; a throw would also leave the
     // half-built instance registered. At the first step it sees the real pose, params and tags, and its commands
     // stay in that tick's output unless step() overrides them.
-    instances.set(handle, { def, ctx, out, tags: tagsBox, measuredJoints, measuredGrips, sensed, inUsed, inConveyorSpeeds, servos, needsInit: typeof def.init === 'function' })
+    instances.set(handle, { def, ctx, out, tags: tagsBox, measuredJoints, measuredGrips, sensed, inUsed, inConveyorSpeeds, inFluid, servos, needsInit: typeof def.init === 'function' })
     return handle
   } catch (e) {
     fail(e instanceof Error ? e.message : String(e))
@@ -765,7 +799,7 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
 
 /** The joint/gripper names a part declared (definePart({ joints, grippers })) - for buildPackage to
  *  cross-check them against the rig geometry, making the typed-bag's "typo = error" promise true at build. */
-export function declarations(handle: number): { joints: string[]; grippers: string[]; lamps: string[]; servos: string[]; interactive: boolean; hasStep: boolean; hasInit: boolean; useParam?: string; snap?: SnapSpec; unit?: UnitLoadDecl } {
+export function declarations(handle: number): { joints: string[]; grippers: string[]; lamps: string[]; servos: string[]; interactive: boolean; hasStep: boolean; hasInit: boolean; useParam?: string; snap?: SnapSpec; unit?: UnitLoadDecl; fluid?: FluidSpec } {
   const inst = instances.get(handle)
   if (!inst) {
     fail(`oip-behavior: bad handle ${handle}`)
@@ -780,6 +814,7 @@ export function declarations(handle: number): { joints: string[]; grippers: stri
   const useParam = hostCopy(def.useParam)
   const snap = hostCopy((def as { snap?: SnapSpec }).snap)
   const unit = hostCopy(def.unit)
+  const fluid = hostCopy(def.fluid)
   return {
     joints: names(def.joints),
     grippers: names(def.grippers),
@@ -791,6 +826,7 @@ export function declarations(handle: number): { joints: string[]; grippers: stri
     ...(useParam !== undefined ? { useParam } : {}),
     ...(snap ? { snap } : {}),
     ...(unit ? { unit } : {}),
+    ...(fluid ? { fluid } : {}),
   }
 }
 
@@ -906,6 +942,7 @@ export function stepDirect(handle: number, input: BehaviorInput, dt: number): Be
     }
     inst.inUsed.used = input.used === true
     inst.inConveyorSpeeds.v = input.conveyorSpeeds ?? EMPTY_SPEEDS // ref-swap (host rebuilds the map once per tick)
+    inst.inFluid.v = input.fluid ?? NO_FLUID
     inst.out.sv[0] = inst.out.sv[1] = inst.out.sv[2] = 0
     inst.out.tags = {}
     inst.out.joints = {}
@@ -923,6 +960,7 @@ export function stepDirect(handle: number, input: BehaviorInput, dt: number): Be
     inst.out.arc = null
     inst.out.deckSpeed = null
     inst.out.copySpeeds = null
+    inst.out.fluid = null
     const t2 = timed ? now() : 0
 
     if (inst.needsInit) {
@@ -961,6 +999,7 @@ export function stepDirect(handle: number, input: BehaviorInput, dt: number): Be
       arc: o.arc ?? undefined,
       deckSpeed: o.deckSpeed ?? undefined,
       copySpeeds: o.copySpeeds ?? undefined,
+      fluid: o.fluid ?? undefined,
     }
   } catch (e) {
     fail(e instanceof Error ? e.message : String(e))

@@ -31,8 +31,8 @@ export type Plug =
   | { shape: 'rect'; label: 'tile'; tile: SnapTile }
   /** the part's own footprint box, landing flush against any part's footprint faces (ambient `flush`) */
   | { shape: 'footprint'; label: 'flush' }
-  /** a linear part chaining end to end / at an L-corner with a same-group line (peer: barriers) */
-  | { shape: 'line'; label: 'chain'; chain: SnapChain }
+  /** a linear part chaining end to end / at an L-corner with a same-group line (peer: barriers, pipes) */
+  | { shape: 'line'; label: string; chain: SnapChain }
   /** a part seating on a host deck edge: along it (a barrier on a platform rim) or into it (a flight, fitted to
    *  the deck's height when it stands on the floor) */
   | { shape: 'edgeSeat'; label: 'edgeMount'; edgeMount: SnapEdgeMount }
@@ -42,6 +42,13 @@ export const FACE_KIND = 'face'
 
 const compiled = new WeakMap<SnapSpec, readonly Plug[]>()
 const NONE: readonly Plug[] = []
+const NO_CHAINS: readonly SnapChain[] = []
+
+/** Every `SnapChain` entry declared on `snap` (whether a single object or an array). */
+export function chainsOf(snap: SnapSpec | undefined): readonly SnapChain[] {
+  if (!snap?.chain) return NO_CHAINS
+  return Array.isArray(snap.chain) ? snap.chain : [snap.chain]
+}
 
 /**
  * The plugs a snap declaration gives its part as a mover, in a fixed order (it only decides ties of exactly equal
@@ -54,7 +61,11 @@ export function plugsOf(snap: SnapSpec | undefined): readonly Plug[] {
   const out: Plug[] = []
   if (snap.track) out.push({ shape: 'track', label: 'track', track: snap.track })
   if (snap.tile) out.push({ shape: 'rect', label: 'tile', tile: snap.tile })
-  if (snap.chain) out.push({ shape: 'line', label: 'chain', chain: snap.chain })
+  if (Array.isArray(snap.chain)) {
+    snap.chain.forEach((chain, i) => out.push({ shape: 'line', label: `chain[${i}]`, chain }))
+  } else if (snap.chain) {
+    out.push({ shape: 'line', label: 'chain', chain: snap.chain })
+  }
   if (snap.edgeMount) out.push({ shape: 'edgeSeat', label: 'edgeMount', edgeMount: snap.edgeMount })
   snap.mounts?.forEach((mount, i) => out.push({ shape: 'mount', label: `mounts[${i}]`, mount }))
   if (snap.flush === true) out.push({ shape: 'footprint', label: 'flush' })

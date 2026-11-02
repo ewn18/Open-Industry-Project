@@ -9,7 +9,7 @@
 // docs/custom-part-capability-surface.md. Driven by src/sim/embeddedBehavior.ts.
 
 // types only: partPackage.ts imports this file, and the SDK lifts both (scripts/build-part-sdk.mjs)
-import type { PackageManifest, PartPackageGeometry, RigGeometry } from './partPackage'
+import type { FluidCommand, FluidReading, FluidSpec, PackageManifest, PartPackageGeometry, RigGeometry } from './partPackage'
 
 export interface Vec3 {
   x: number
@@ -950,6 +950,10 @@ export interface PartContext<P extends ParamSchema = ParamSchema, J extends stri
    * conveyor's commanded speed once per tick, so all parts read the same values regardless of order).
    */
   conveyorRunning(id: string): boolean
+  /** Drive this part's 1D hydraulic parameters for the current tick (a pump's RPM/curve or a pipe's ID/supply/end state). */
+  setFluid(cmd: FluidCommand): void
+  /** Read this part's solved 1D hydraulic state (`{ pressure, flow, velocity, supplied }`, PSI and GPM) from the last step. */
+  fluid(): FluidReading
 }
 
 /**
@@ -1473,26 +1477,21 @@ export interface SnapTile {
  * target un-omits the shared end, and the host applies both as one undo entry.
  */
 export interface SnapChain {
-  /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share
-   *  a group; the two groups never mix. The declarative form of the barrier-family rule. */
+  /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share a group */
   group: string
-  /** names the `number` param giving the rail length (extends along local +X, half-length = length/2). Optional when
-   *  both {@link start} and {@link end} are declared. */
+  /** names the `number` param giving the rail length (extends along local +X, half-length = length/2). Optional when both {@link start} and {@link end} are declared. */
   lengthParam?: string
   /** engage reach in metres - how near a drop must be to chain (a guard rail's ~3 m, a fence's tighter ~1 m) */
   reach: number
-  /** Local `[x, y, z]` of the start (local −X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when
-   *  {@link lengthParam} is set). */
+  /** Local `[x, y, z]` of the start (local −X) link point (default `[0, 0, 0]`, shifted by `-length/2` on X when {@link lengthParam} is set). */
   start?: [number, number, number]
   /** Param-driven shifts applied to {@link start} (`axis: 0 | 1 | 2`). */
   startParams?: SnapParamOffset[]
-  /** Local `[x, y, z]` of the end (local +X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when
-   *  {@link lengthParam} is set). */
+  /** Local `[x, y, z]` of the end (local +X) link point (default `[0, 0, 0]`, shifted by `+length/2` on X when {@link lengthParam} is set). */
   end?: [number, number, number]
   /** Param-driven shifts applied to {@link end} (`axis: 0 | 1 | 2`). */
   endParams?: SnapParamOffset[]
-  /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and
-   *  toggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts. */
+  /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once. */
   omitStartParam?: string
   /** Optional: names the `boolean` param for the end-end (local +X) post - the twin of {@link omitStartParam}. */
   omitEndParam?: string
@@ -1566,34 +1565,21 @@ export interface SnapEdgeMount {
  * host, matched by kind, solved per (plug shape, socket shape), and ranked by one rule.
  */
 export interface SnapSpec {
-  /** Ambient face-flush: dragged near another part, this part's footprint box sits flush against that
-   *  part's nearest vertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face,
-   *  height untouched). Declare it on parts that get tiled - crates, pallets, racks - where flush-beside-
-   *  the-last-one is wanted on nearly every drop (it compounds with Shift-drag duplicate into rapid row
-   *  building). Ambient snapping is always declared intent, never inferred: a part without this flag never
-   *  flushes on its own - the editor's hold-B Face mode is the explicit, universal alternative. */
+  /** Ambient face-flush: dragged near another part, this part's footprint box sits flush against that part's nearest
+   *  vertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched). */
   flush?: boolean
-  /**
-   * Points this part lands onto a compatible host surface (sensors, diverters, …).
-   *
-   * Every entry is tried against each candidate host and the best-fitting one is used (a body overlapping the
-   * host first, then lowest cost - the same rule that ranks one host against another), so declaration order
-   * does not decide. Since {@link SnapMount.accepts} names one surface kind, several entries are how a device
-   * says it can seat on more than one kind of host: a sensor that mounts on a conveyor's guard rail
-   * (`'conveyorGuard'`) or, failing that, flat on a bracket (`'face'`), is two mounts.
-   */
+  /** Points this part lands onto a compatible host surface (sensors, diverters, …). Every entry is tried against each
+   *  candidate host and the best-fitting one is used, so declaration order does not decide. */
   mounts?: SnapMount[]
   /** seat this part onto a roller conveyor bed, anchored to the roller grid (blade stops, …) */
   track?: SnapTrack
-  /** surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on;
-   *  a deck a barrier seats along) */
+  /** surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on; a deck a barrier seats along) */
   surfaces?: SnapSurface[]
   /** edge-to-edge tiling with same-group parts, coplanar (floor markings tile, decks abut) */
   tile?: SnapTile
-  /** end-to-end chaining of a linear part with same-group parts (barriers: collinear extend + L-corner) */
-  chain?: SnapChain
-  /** seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it, a gate set
-   *  into its railing ({@link SnapEdgeMount}) */
+  /** end-to-end chaining of a linear part with same-group parts (one chain or an array of chains for multi-port parts) */
+  chain?: SnapChain | SnapChain[]
+  /** seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it ({@link SnapEdgeMount}) */
   edgeMount?: SnapEdgeMount
 }
 
@@ -1676,6 +1662,8 @@ export interface PartDefinition<P extends ParamSchema = ParamSchema, J extends s
    * (ctx.join) makes the same kind of thing. See {@link UnitLoadDecl}.
    */
   unit?: UnitLoadDecl
+  /** Optional 1D fluid dynamics role (`{ role: 'pump' | 'pipe' }`); ports are taken from `snap.chain`. */
+  fluid?: FluidSpec
   /**
    * Emit the part's geometry procedurally (Tier 2 in the part authoring guide), for shapes the static manifest
    * can't list (a bent multi-segment belt, a lofted or revolved profile). It is param-driven and has no side

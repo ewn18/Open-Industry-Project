@@ -62,6 +62,7 @@ import { DECK_AXES } from './conveyorContacts'
 import { ConveyorFacets } from './conveyorFacets'
 import { driveDeckEntries } from './deckDrive'
 import { SimFlowFacts } from './flowFacts'
+import { FluidNetwork } from './fluidNetwork'
 import { buildFrame } from './frameBuild'
 import { LAYER_MOVING, LAYER_NON_MOVING, NUM_BROAD_PHASE_LAYERS, NUM_OBJECT_LAYERS } from './layers'
 import { BodyTableFull, PartBodies } from './partBodies'
@@ -168,6 +169,8 @@ export class SimWorld implements SimCore<BoxFrame> {
   private readonly sensors: SensorRegistry
   /** the rigs' load-cell links and what they read (loadCells.ts, ctx.weight) */
   private readonly loadCells: LoadCells
+  /** the 1D hydraulic network for pumps and connected pipes (fluidNetwork.ts, ctx.fluid / ctx.setFluid) */
+  private readonly fluid = new FluidNetwork()
   /** every part's bodies, filed by part, and the constructors that file them (partBodies.ts) */
   private readonly bodies: PartBodies
   /** the part groups, read-only (PartBodies.groups): updateScene's reconcile reads them, and sdkConveyorParity
@@ -314,6 +317,7 @@ export class SimWorld implements SimCore<BoxFrame> {
     // feeds rendering is a separate instance). Idempotent replace, so re-registering on rebuild is fine.
     registerScenePackages(scene.packages)
     this.sceneParts = scene.parts
+    this.fluid.syncScene(scene.parts)
     // the tracker finds conveyors through the registry, which in a fresh worker is empty until the line above: read
     // the parts again now, or the first run's facts name no conveyor at all (a drop reads as "over no conveyor")
     this.flowFacts?.tracker.setParts(scene.parts)
@@ -515,6 +519,7 @@ export class SimWorld implements SimCore<BoxFrame> {
       inp.zoneMarks = zoneMarks
       inp.zoneMix = zoneMix
       inp.weights = b.partId ? this.loadCells.readingsOf(b.partId) : undefined // ctx.weight
+      inp.fluid = b.partId ? this.fluid.readingOf(b.partId) : undefined // ctx.fluid
       inp.joints = b.measuredJoints
       inp.grips = b.heldGrips
       inp.used = used
@@ -588,6 +593,7 @@ export class SimWorld implements SimCore<BoxFrame> {
           b.displays = parsed.displays ?? {}
           b.subPoses = parsed.subPoses ?? {}
           if (b.copyDecks) b.copySpeeds = parsed.copySpeeds ?? {}
+          if (parsed.fluid) this.fluid.applyCommand(b.partId, parsed.fluid)
         }
         // a behavior's tag writes are captured for any part (deck or rig): the part→PLC half of the bus.
         b.tags = parsed.tags ?? {}
@@ -616,6 +622,7 @@ export class SimWorld implements SimCore<BoxFrame> {
     }
     for (const b of started) this.wakeCargoOn(b)
     if (startedDecks.length) this.wakeCargoOnDecks(startedDecks)
+    this.fluid.step(dt)
     bus.clearUses() // each "use" pulses ctx.used() for exactly the tick after the click
   }
 
@@ -1053,6 +1060,7 @@ export class SimWorld implements SimCore<BoxFrame> {
       // boxes, collision:'hull' ones as convex hulls (the general collision channel; a conveying belt
       // instead gets the finer path-aware guard walls in spawnFromPackage). Neither declared ⇒ inert.
       this.addFunctionStaticColliders(part, pkg)
+      if (pkg.fluid && !this.attachJointBehavior(part.id, pkg.behavior, JSON.stringify(part.params), part.position, part.rotationY)) this.reportAttachFailure(part)
     } else if (pkg.geometry.kind === 'rig') {
       // rig: a joint-emitting behavior + a kinematic collision body per link. tickBehaviors captures the
       // joints, RigDriver.drive runs FK (shared with the renderer) and MoveKinematic's each body so the
@@ -1371,6 +1379,7 @@ export class SimWorld implements SimCore<BoxFrame> {
     if (structural) {
       for (const box of this.boxes) this.bodyInterface.ActivateBody(box.body.GetID())
     }
+    this.fluid.syncScene(scene.parts)
   }
 
   /** The flow facts added or updated since the last call (the worker ships them on each frame; protocol.ts). A fact
@@ -1569,6 +1578,7 @@ export class SimWorld implements SimCore<BoxFrame> {
     if (group.behaviors) this.bus.remove(group.behaviors)
     if (group.rigs) this.rigDriver.remove(group.rigs)
     this.sensors.forget(id)
+    this.fluid.forget(id)
     this.bus.deleteConveyorSpeed(id) // a speed-bearing part no longer exists to interlock against
     this.loadCells.set(id, []) // its platforms' bodies are gone
     this.holds.forgetPart(id)
@@ -1590,6 +1600,7 @@ export class SimWorld implements SimCore<BoxFrame> {
     this.bus.destroyAll()
     this.rigDriver.clear() // bodies are torn down via their part group; just drop the stale refs
     this.sensors.clear()
+    this.fluid.clear()
     this.loadCells.clear()
     this.loadCells.dispose()
     J.destroy(this.joltInterface)

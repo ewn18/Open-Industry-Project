@@ -76,7 +76,7 @@ describe('committed part-package loader (the first-party catalog source)', () =>
     const chainOf = (id: string) => {
       const c = byId.get(id)?.snap?.chain
       expect(c, `${id} must declare a chain snap`).toBeTruthy()
-      return c!
+      return Array.isArray(c) ? c[0]! : c!
     }
     const fence = chainOf('oip.fence')
     const gate = chainOf('oip.safety-gate')
