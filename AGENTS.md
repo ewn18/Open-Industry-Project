@@ -133,7 +133,7 @@ projectTestsRun.ts); eslint enforces both.
   `docs/part-authoring-guide.md` is the author-facing tour; keep it in step when the SDK gains a capability.
 - **`docs/`** - design docs for the non-obvious systems. Read the matching doc before reworking an area:
   `architecture.md` (one core, two shells), `scene-composition.md`, `part-sandbox.md` (SES + Compartments, folder
-  grants, network consent), `ladder.md`, `motion-control.md`, `plc-typed-storage.md`, `three-coupling.md` (every
+  grants, network consent), `ladder.md`, `motion-control.md`, `fluid-network.md`, `plc-typed-storage.md`, `three-coupling.md` (every
   three.js internals patch; read before bumping three, update when you add or retire a patch), `cdn-runbook.md`
   (hosting measurements and texture-residency numbers; read before spending effort on load performance).
 - **`apps/desktop/`** - the native (Electron) shell wrapping the same TS core.

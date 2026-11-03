@@ -1638,19 +1638,857 @@
       ]
     },
     "FluidSpec": {
-      "description": "Declares that a part participates in the 1D hydraulic fluid network. Fluid port positions are taken\ndirectly from the part's `snap.chain` endpoints (no duplicate port coordinates):\n- `'pump'`: an active pressure/flow source driven by `ctx.setFluid({ rpm, maxRpm, gpmPerRpm, maxHeadPsi })`.\n  Its first chain `start` (or `chain[0]`) is the intake (suction) port; its `end` (or `chain[1]`) is the discharge port.\n- `'pipe'`: a passive conduit whose inner diameter (`pipeId`, inches), `length` (m), `fluidSupply` (intake source)\n  and `openEnd` (free-flow vs. capped unconnected end) are set via `ctx.setFluid(...)`.",
+      "description": "Declares that a part participates in the 1D hydraulic fluid network.\nCan declare ports, elements, nodes, and measurement taps, or legacy role ('pump' | 'pipe').",
       "type": "object",
       "properties": {
+        "ports": {
+          "description": "External connection ports.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FluidPortDecl"
+          }
+        },
+        "elements": {
+          "description": "Hydraulic elements internal to or spanning the part's ports.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FluidElementDecl"
+          }
+        },
+        "nodes": {
+          "description": "Internal node IDs used to connect elements within the part without exposing external ports.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "taps": {
+          "description": "Measurement taps that sense pressure/flow near a node or edge.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FluidTapDecl"
+          }
+        },
         "role": {
+          "description": "Legacy role for transitional backward compatibility ('pump' | 'pipe').",
           "enum": [
+            "pipe",
+            "pump"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "FluidPortDecl": {
+      "description": "Declaration of an external port on a fluid-participating part.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Identifier unique within the part (e.g. 'suction', 'discharge', 'inlet', 'outlet', 'a', 'b').",
+          "type": "string"
+        },
+        "at": {
+          "description": "Local coordinate of the port `[x, y, z]`.",
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "atParams": {
+          "description": "Param-driven shifts applied to `at`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SizeParamRef"
+          }
+        },
+        "chain": {
+          "description": "Reference to a snap.chain endpoint (reusing existing snap points without coordinate duplication).",
+          "type": "object",
+          "properties": {
+            "index": {
+              "type": "number"
+            },
+            "end": {
+              "enum": [
+                "start",
+                "end"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "index",
+            "end"
+          ]
+        },
+        "dir": {
+          "description": "Outward normal direction vector of the port (e.g. `[1, 0, 0]` for +X).",
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "FluidElementDecl": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "pipe",
             "pump",
-            "pipe"
+            "valve",
+            "checkValve",
+            "source",
+            "outlet",
+            "tank",
+            "meter",
+            "heater"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pipe"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/PipeElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pump"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/PumpElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "valve"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/ValveElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "checkValve"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/CheckValveElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "source"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/SourceElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "outlet"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/OutletElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tank"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/TankElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "meter"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/MeterElementDecl"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "heater"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/HeaterElementDecl"
+          }
+        }
+      ]
+    },
+    "PipeElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "pipe"
+        },
+        "name": {
+          "type": "string"
+        },
+        "a": {
+          "type": "string"
+        },
+        "b": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "length": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "roughness": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
           ]
         }
       },
       "additionalProperties": false,
       "required": [
-        "role"
+        "kind",
+        "a",
+        "b",
+        "diameter"
+      ]
+    },
+    "FluidNum": {
+      "description": "A constant number or an expression resolved from a part parameter: `params[param] * (scale ?? 1) + (add ?? 0)`.",
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "param": {
+              "type": "string"
+            },
+            "scale": {
+              "type": "number"
+            },
+            "add": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "param"
+          ]
+        }
+      ]
+    },
+    "PumpElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "pump"
+        },
+        "name": {
+          "type": "string"
+        },
+        "suction": {
+          "type": "string"
+        },
+        "discharge": {
+          "type": "string"
+        },
+        "ratedRpm": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "shutoffHead": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "ratedFlow": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "reverseFlow": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "suction",
+        "discharge",
+        "ratedRpm",
+        "shutoffHead",
+        "ratedFlow"
+      ]
+    },
+    "ValveElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "valve"
+        },
+        "name": {
+          "type": "string"
+        },
+        "a": {
+          "type": "string"
+        },
+        "b": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "characteristic": {
+          "enum": [
+            "linear",
+            "equalPercent",
+            "quickOpen"
+          ]
+        },
+        "normallyOpen": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "not": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "a",
+        "b",
+        "diameter"
+      ]
+    },
+    "CheckValveElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "checkValve"
+        },
+        "name": {
+          "type": "string"
+        },
+        "inlet": {
+          "type": "string"
+        },
+        "outlet": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "crackingPressure": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "inlet",
+        "outlet",
+        "diameter"
+      ]
+    },
+    "SourceElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "source"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "pressure": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "not": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "whenUnconnected": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "port"
+      ]
+    },
+    "OutletElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "outlet"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "enabled": {
+          "anyOf": [
+            {
+              "const": false
+            },
+            {
+              "const": true
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "not": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "whenUnconnected": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "port",
+        "diameter"
+      ]
+    },
+    "TankElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "tank"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TankPortSpec"
+          }
+        },
+        "area": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "height": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "initialLevel": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "param": {
+                  "type": "string"
+                },
+                "scale": {
+                  "type": "number"
+                },
+                "add": {
+                  "type": "number"
+                },
+                "min": {
+                  "type": "number"
+                },
+                "max": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "param"
+              ]
+            }
+          ]
+        },
+        "vented": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ports",
+        "area",
+        "height"
+      ]
+    },
+    "TankPortSpec": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "string"
+        },
+        "height": {
+          "$ref": "#/$defs/FluidNum"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "height"
+      ]
+    },
+    "MeterElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "meter"
+        },
+        "name": {
+          "type": "string"
+        },
+        "a": {
+          "type": "string"
+        },
+        "b": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "a",
+        "b",
+        "diameter"
+      ]
+    },
+    "HeaterElementDecl": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "heater"
+        },
+        "name": {
+          "type": "string"
+        },
+        "a": {
+          "type": "string"
+        },
+        "b": {
+          "type": "string"
+        },
+        "diameter": {
+          "$ref": "#/$defs/FluidNum"
+        },
+        "maxPower": {
+          "$ref": "#/$defs/FluidNum"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "a",
+        "b",
+        "diameter",
+        "maxPower"
+      ]
+    },
+    "FluidTapDecl": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "at": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "reach": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "at"
       ]
     },
     "SnapSpec": {
@@ -1658,11 +2496,11 @@
       "type": "object",
       "properties": {
         "flush": {
-          "description": "Ambient face-flush: dragged near another part, this part's footprint box sits flush against that part's nearest\nvertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched).",
+          "description": "Ambient face-flush: dragged near another part, this part's footprint box sits flush against that part's nearest\nvertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched). Declare it\non parts that get tiled - crates, pallets, racks - where flush-beside-the-last-one is wanted on nearly every drop.\nAmbient snapping is always declared intent, never inferred: editor's hold-B Face mode is the explicit alternative.",
           "type": "boolean"
         },
         "mounts": {
-          "description": "Points this part lands onto a compatible host surface (sensors, diverters, …). Every entry is tried against each\ncandidate host and the best-fitting one is used, so declaration order does not decide.",
+          "description": "Points this part lands onto a compatible host surface (sensors, diverters, …). Every entry is tried against each\ncandidate host and the best-fitting one is used (a body overlapping the host first, then lowest cost - the same\nrule that ranks one host against another), so declaration order does not decide. Since {@link SnapMount.accepts}\nnames one surface kind, several entries are how a device says it can seat on more than one kind of host.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SnapMount"
@@ -1673,7 +2511,7 @@
           "$ref": "#/$defs/SnapTrack"
         },
         "surfaces": {
-          "description": "surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on; a deck a barrier seats along)",
+          "description": "surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on;\na deck a barrier seats along)",
           "type": "array",
           "items": {
             "$ref": "#/$defs/SnapSurface"
@@ -1698,7 +2536,7 @@
           ]
         },
         "edgeMount": {
-          "description": "seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it ({@link SnapEdgeMount})",
+          "description": "seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it, a gate set\ninto its railing ({@link SnapEdgeMount})",
           "$ref": "#/$defs/SnapEdgeMount"
         }
       },
@@ -1859,7 +2697,7 @@
       "type": "object",
       "properties": {
         "group": {
-          "description": "parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share a group",
+          "description": "parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share\na group; the two groups never mix. The declarative form of the barrier-family rule.",
           "type": "string"
         },
         "lengthParam": {
@@ -1919,7 +2757,7 @@
           }
         },
         "omitStartParam": {
-          "description": "Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once.",
+          "description": "Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts.",
           "type": "string"
         },
         "omitEndParam": {

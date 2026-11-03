@@ -1,77 +1,29 @@
-// 1D lumped-parameter hydraulic network owner for SimWorld (src/sim/world.ts).
-// Resolves connected pump/pipe networks from `snap.chain` ports (src/core/fluid/fluidTopology.ts) and steps
-// pressure (PSI), volumetric flow (GPM) and fluid velocity (ft/s) each fixed physics tick.
+// Thin SimWorld adapter for the 1D fluid dynamics network.
+// Bridges the pure core graph/solver (src/core/fluid/) with SimWorld and behavior scripts.
 
-import { computeFluidTopology, type FluidNode, type FluidTopology } from '../core/fluid/fluidTopology'
-import { resolvePartParams } from '../core/geometry/geometryEval'
-import type { ParamValue } from '../core/parts/partApi'
-import type { FluidCommand, FluidReading } from '../core/parts/partPackage'
-import { getPackage } from '../core/parts/partRegistry'
+import { valveOpeningFactor } from '../core/fluid/elements/valve'
+import { compileFluidGraph, type FluidGraph } from '../core/fluid/fluidGraph'
+import { createInitialFluidState, type FluidState, stepFluidNetwork } from '../core/fluid/fluidSolver'
+import { computeFluidTopology, type FluidTopology } from '../core/fluid/fluidTopology'
+import type { FluidCommand, FluidReading } from '../core/fluid/fluidTypes'
+import { inToM, m3sToGpm, paToPsi } from '../core/fluid/fluidUnits'
 import type { PartInstance } from '../core/types'
-
-/** Darcy-Weisbach lumped resistance scale (PSI / GPM^2 per m of 1-inch ID pipe). */
-const PIPE_FRICTION_K = 0.08
-/** Exit velocity-head resistance factor at an open discharge end (PSI / GPM^2 for a 1-inch ID nozzle). */
-const EXIT_NOZZLE_K = 0.35
-/** Base hydraulic capacitance time-constant scale (s per m of 1-inch ID pipe). */
-const PIPE_CAPACITANCE_K = 0.005
-/** Natural depressurization / bleed time constant (s) when a pump stops or loses supply. */
-const DEPRESSURIZE_TAU = 0.35
 
 export const ZERO_FLUID_READING: FluidReading = Object.freeze({
   pressure: 0,
   flow: 0,
   velocity: 0,
   supplied: false,
+  ports: {},
+  elements: {},
+  taps: {},
 })
 
-interface PartFluidState {
-  partId: string
-  role: 'pump' | 'pipe'
-  // Pump parameters
-  rpm: number
-  maxRpm: number
-  gpmPerRpm: number
-  maxHeadPsi: number
-  // Pipe parameters
-  pipeId: number
-  length: number
-  fluidSupply: boolean
-  openEnd: boolean
-  // Live solved state
-  pressure: number
-  flow: number
-  velocity: number
-  supplied: boolean
-  // Beginning-of-tick snapshot handed to behaviors (order-independent)
-  snapshot: FluidReading
-}
-
-function numOr(v: unknown, fallback: number, min = -Infinity): number {
-  return typeof v === 'number' && Number.isFinite(v) && v >= min ? v : fallback
-}
-
-function boolOr(v: unknown, fallback: boolean): boolean {
-  return typeof v === 'boolean' ? v : fallback
-}
-
-/** Resistance (PSI / GPM^2) of a pipe segment of length `lengthM` (m) and inner diameter `pipeIdIn` (inches). */
-function pipeResistance(pipeIdIn: number, lengthM: number): number {
-  const d = Math.max(0.25, pipeIdIn)
-  const l = Math.max(0.05, lengthM)
-  return (PIPE_FRICTION_K * l) / Math.pow(d, 5)
-}
-
-/** Exit resistance (PSI / GPM^2) of an open pipe end of inner diameter `pipeIdIn` (inches). */
-function exitResistance(pipeIdIn: number): number {
-  const d = Math.max(0.25, pipeIdIn)
-  return EXIT_NOZZLE_K / Math.pow(d, 4)
-}
-
-/** Fluid velocity (ft/s) for `flowGpm` (GPM) inside a circular pipe of inner diameter `pipeIdIn` (inches). */
-function fluidVelocityFtPerSec(flowGpm: number, pipeIdIn: number): number {
-  const d = Math.max(0.25, pipeIdIn)
-  return (0.4085 * Math.abs(flowGpm)) / (d * d)
+interface PartSnapshot {
+  reading: FluidReading
+  pumpRpm: number
+  pumpMaxRpm: number
+  pumpMaxHeadPa: number
 }
 
 /** Hash a partId string into a deterministic scalar phase angle (0 .. 2π). */
@@ -98,380 +50,364 @@ function turbulentNoise(t: number, phase: number): number {
 }
 
 export class FluidNetwork {
-  private readonly states = new Map<string, PartFluidState>()
-  private topology: FluidTopology = { nodes: new Map() }
+  private topology: FluidTopology = {
+    junctions: [],
+    portJunctions: new Map(),
+    portExternalDegree: new Map(),
+  }
+  private graph: FluidGraph = compileFluidGraph([], this.topology)
+  private state: FluidState = createInitialFluidState(this.graph)
+  private readonly snapshots = new Map<string, PartSnapshot>()
   private simTime = 0
 
-  /** Sync the fluid network's participant table and port topology with the current scene parts. */
+  /** Sync the fluid network topology and compiled graph with the current scene parts. */
   syncScene(parts: readonly PartInstance[]): void {
     this.topology = computeFluidTopology(parts)
-    const activeIds = new Set<string>()
+    const newGraph = compileFluidGraph(parts, this.topology)
+    const newState = createInitialFluidState(newGraph)
 
-    for (const part of parts) {
-      if (part.type !== 'part') continue
-      const pkg = getPackage(part.packageId)
-      if (!pkg?.fluid) continue
-      activeIds.add(part.id)
+    // Preserve pressures from old state where node junctions match
+    for (const [jId, oldNodeIdx] of this.graph.junctionToNode) {
+      const newNodeIdx = newGraph.junctionToNode.get(jId)
+      if (newNodeIdx !== undefined && oldNodeIdx < this.state.pressure.length) {
+        newState.pressure[newNodeIdx] = this.state.pressure[oldNodeIdx]!
+      }
+    }
 
-      const params = resolvePartParams(pkg.params, part.params as Record<string, ParamValue>)
-      const existing = this.states.get(part.id)
-      const pipeId = numOr(params.pipeId, 4, 0.1)
-      const length = numOr(params.length, 1, 0.05)
-      const fluidSupply = boolOr(params.fluidSupply, false)
-      const openEnd = boolOr(params.openEnd, false)
-      const maxRpm = numOr(params.maxRpm, 1750, 1)
-      const gpmPerRpm = numOr(params.gpmPerRpm, 0.1, 0)
-      const maxHeadPsi = numOr(params.maxHeadPsi, 80, 0)
+    this.graph = newGraph
+    this.state = newState
 
-      if (existing) {
-        existing.role = pkg.fluid.role
-        existing.pipeId = pipeId
-        existing.length = length
-        existing.fluidSupply = fluidSupply
-        existing.openEnd = openEnd
-        existing.maxRpm = maxRpm
-        existing.gpmPerRpm = gpmPerRpm
-        existing.maxHeadPsi = maxHeadPsi
-      } else {
-        this.states.set(part.id, {
-          partId: part.id,
-          role: pkg.fluid.role,
-          rpm: 0,
-          maxRpm,
-          gpmPerRpm,
-          maxHeadPsi,
-          pipeId,
-          length,
-          fluidSupply,
-          openEnd,
-          pressure: 0,
-          flow: 0,
-          velocity: 0,
-          supplied: false,
-          snapshot: ZERO_FLUID_READING,
+    // Sync part snapshots
+    const activePartIds = new Set<string>()
+    for (const [partId, elements] of this.graph.elementsByPart) {
+      activePartIds.add(partId)
+      if (!this.snapshots.has(partId)) {
+        const pumpEl = elements.find((e) => e.kind === 'pump')
+        const elementsReading: Record<string, { flow: number; level?: number; volume?: number }> = {}
+        for (const el of elements) {
+          if (el.kind === 'tank') {
+            elementsReading[el.name] = {
+              flow: 0,
+              level: el.level,
+              volume: el.area && el.level !== undefined ? el.level * el.area : undefined,
+            }
+          } else {
+            elementsReading[el.name] = { flow: 0 }
+          }
+        }
+        const hasTank = elements.some((e) => e.kind === 'tank')
+        const initialReading = hasTank
+          ? Object.freeze({
+              pressure: 0,
+              flow: 0,
+              velocity: 0,
+              supplied: true,
+              ports: {},
+              elements: elementsReading,
+              taps: {},
+            })
+          : ZERO_FLUID_READING
+
+        this.snapshots.set(partId, {
+          reading: initialReading,
+          pumpRpm: 0,
+          pumpMaxRpm: pumpEl?.ratedRpm ?? 1750,
+          pumpMaxHeadPa: pumpEl?.shutoffHead ?? 550000,
         })
       }
     }
 
-    for (const id of [...this.states.keys()]) {
-      if (!activeIds.has(id)) this.states.delete(id)
+    for (const [partId] of this.graph.tapsByPart) {
+      activePartIds.add(partId)
+      if (!this.snapshots.has(partId)) {
+        this.snapshots.set(partId, {
+          reading: ZERO_FLUID_READING,
+          pumpRpm: 0,
+          pumpMaxRpm: 1750,
+          pumpMaxHeadPa: 550000,
+        })
+      }
+    }
+
+    for (const id of [...this.snapshots.keys()]) {
+      if (!activePartIds.has(id)) this.snapshots.delete(id)
     }
   }
 
-  /** Remove a single destroyed part from the fluid network. */
-  forget(partId: string): void {
-    this.states.delete(partId)
+  forget(_partId: string): void {
+    // Managed via syncScene on updateScene; individual forget is a no-op to preserve runtime state across edits
   }
 
-  /** Clear all state on world teardown. */
   clear(): void {
-    this.states.clear()
-    this.topology = { nodes: new Map() }
+    this.topology = {
+      junctions: [],
+      portJunctions: new Map(),
+      portExternalDegree: new Map(),
+    }
+    this.graph = compileFluidGraph([], this.topology)
+    this.state = createInitialFluidState(this.graph)
+    this.snapshots.clear()
     this.simTime = 0
   }
 
   /** Beginning-of-tick fluid reading for `partId` (handed to `BehaviorInput.fluid`). */
   readingOf(partId: string | null | undefined): FluidReading | undefined {
     if (!partId) return undefined
-    return this.states.get(partId)?.snapshot
+    return this.snapshots.get(partId)?.reading
   }
 
   /** Apply a behavior script's `ctx.setFluid(cmd)` command for this tick. */
   applyCommand(partId: string | null | undefined, cmd: FluidCommand | undefined): void {
     if (!partId || !cmd) return
-    const st = this.states.get(partId)
-    if (!st) return
-    if (cmd.rpm !== undefined) st.rpm = Math.max(0, cmd.rpm)
-    if (cmd.maxRpm !== undefined && cmd.maxRpm > 0) st.maxRpm = cmd.maxRpm
-    if (cmd.gpmPerRpm !== undefined && cmd.gpmPerRpm >= 0) st.gpmPerRpm = cmd.gpmPerRpm
-    if (cmd.maxHeadPsi !== undefined && cmd.maxHeadPsi >= 0) st.maxHeadPsi = cmd.maxHeadPsi
-    if (cmd.pipeId !== undefined && cmd.pipeId > 0) st.pipeId = cmd.pipeId
-    if (cmd.length !== undefined && cmd.length > 0) st.length = cmd.length
-    if (cmd.fluidSupply !== undefined) st.fluidSupply = cmd.fluidSupply
-    if (cmd.openEnd !== undefined) st.openEnd = cmd.openEnd
+    const snap = this.snapshots.get(partId)
+    const elements = this.graph.elementsByPart.get(partId)
+    if (!elements) return
+
+    // 1. Pump command handling
+    const pumpEl = elements.find((e) => e.kind === 'pump')
+    if (pumpEl && pumpEl.edgeIndices.length > 0) {
+      const eIdx = pumpEl.edgeIndices[0]!
+      if (cmd.maxRpm !== undefined && typeof cmd.maxRpm === 'number' && cmd.maxRpm > 0) {
+        if (snap) snap.pumpMaxRpm = cmd.maxRpm
+      }
+      if (cmd.maxHeadPsi !== undefined && typeof cmd.maxHeadPsi === 'number' && cmd.maxHeadPsi > 0) {
+        if (snap) snap.pumpMaxHeadPa = cmd.maxHeadPsi * 6894.757
+      }
+      if (cmd.rpm !== undefined && typeof cmd.rpm === 'number') {
+        const rpm = Math.max(0, cmd.rpm)
+        if (snap) snap.pumpRpm = rpm
+        const maxRpm = snap?.pumpMaxRpm ?? pumpEl.ratedRpm ?? 1750
+        const omega = Math.min(2.0, rpm / Math.max(1, maxRpm))
+        const pShutoff = (snap?.pumpMaxHeadPa ?? pumpEl.shutoffHead ?? 550000) * omega * omega
+        this.graph.edgeH[eIdx] = pShutoff
+      } else if (cmd.speed !== undefined && typeof cmd.speed === 'number') {
+        const speed = Math.max(0, Math.min(2.0, cmd.speed))
+        const pShutoff = (snap?.pumpMaxHeadPa ?? pumpEl.shutoffHead ?? 550000) * speed * speed
+        this.graph.edgeH[eIdx] = pShutoff
+      }
+    }
+
+    // 2. Pipe command handling (openEnd / fluidSupply / pipeId / length)
+    const pipeEl = elements.find((e) => e.kind === 'pipe')
+    if (pipeEl) {
+      if (cmd.openEnd !== undefined && typeof cmd.openEnd === 'boolean') {
+        // Find outlet boundary edge if present
+        for (const eIdx of pipeEl.edgeIndices) {
+          const toNode = this.graph.edgeTo[eIdx]!
+          if (this.graph.nodeKind[toNode] === 1 && this.graph.nodeIsSupply[toNode] === 0) {
+            this.graph.edgeOpen[eIdx] = cmd.openEnd ? 1 : 0
+          }
+        }
+      }
+      if (cmd.fluidSupply !== undefined && typeof cmd.fluidSupply === 'boolean') {
+        // Find source boundary edge if present
+        for (const eIdx of pipeEl.edgeIndices) {
+          const fromNode = this.graph.edgeFrom[eIdx]!
+          if (this.graph.nodeKind[fromNode] === 1 && this.graph.nodeIsSupply[fromNode] === 1) {
+            this.graph.edgeOpen[eIdx] = cmd.fluidSupply ? 1 : 0
+          }
+        }
+      }
+      if (typeof cmd.pipeId === 'number' && cmd.pipeId > 0) {
+        const d = inToM(cmd.pipeId)
+        const lengthM = typeof cmd.length === 'number' && cmd.length > 0 ? cmd.length : 1
+        const mainEdge = pipeEl.edgeIndices[0]
+        if (mainEdge !== undefined) {
+          this.graph.edgeR_turb[mainEdge] = (8 * 0.02 * 998.2 * lengthM) / (Math.PI * Math.PI * Math.pow(d, 5))
+          this.graph.edgeR_lam[mainEdge] = (128 * 0.001 * lengthM) / (Math.PI * Math.pow(d, 4))
+        }
+        for (const eIdx of pipeEl.edgeIndices) {
+          const toNode = this.graph.edgeTo[eIdx]!
+          if (this.graph.nodeKind[toNode] === 1 && this.graph.nodeIsSupply[toNode] === 0) {
+            this.graph.edgeR_turb[eIdx] = (0.35 * 1.7323e12) / Math.pow(Math.max(0.25, cmd.pipeId), 4)
+          }
+        }
+      }
+    }
+
+    // 3. Valve command handling (open: number | boolean)
+    const valveEl = elements.find((e) => e.kind === 'valve')
+    if (valveEl && valveEl.edgeIndices.length > 0) {
+      const eIdx = valveEl.edgeIndices[0]!
+      const rawOpen = (cmd as Record<string, unknown>).open ?? (cmd as Record<string, unknown>)[valveEl.name]
+      if (rawOpen !== undefined) {
+        const factor = valveOpeningFactor(
+          typeof rawOpen === 'object' && rawOpen !== null && 'open' in rawOpen
+            ? (rawOpen as { open?: number | boolean }).open
+            : (rawOpen as number | boolean),
+          valveEl.characteristic,
+        )
+        this.graph.edgeOpen[eIdx] = factor
+      }
+    }
+
+    // 4. Tank command handling (level: number)
+    const tankEl = elements.find((e) => e.kind === 'tank')
+    if (tankEl && typeof (cmd as Record<string, unknown>).level === 'number') {
+      tankEl.level = Math.max(0, Math.min(tankEl.height ?? 10, (cmd as Record<string, unknown>).level as number))
+    }
   }
 
   /** Advance the 1D hydraulic network by one physics step `dt` (seconds). */
   step(dt: number): void {
-    if (this.states.size === 0) return
+    if (this.graph.numNodes === 0) return
     this.simTime += dt
-    const nodes = this.topology.nodes
 
-    // Accumulators for target pressure, target flow, and supply status across all parts
-    const targetPressure = new Map<string, number>()
-    const targetFlow = new Map<string, number>()
-    const isSupplied = new Map<string, boolean>()
-
-    for (const st of this.states.values()) {
-      targetPressure.set(st.partId, 0)
-      targetFlow.set(st.partId, 0)
-      isSupplied.set(st.partId, st.role === 'pipe' && st.fluidSupply)
-    }
-
-    // 1. Propagate static `fluidSupply` connectivity across passive pipe networks even when pumps are off
-    for (const [id, st] of this.states) {
-      if (st.role === 'pipe' && st.fluidSupply) {
-        this.markConnectedPipesSupplied(id, nodes, isSupplied)
+    // Set driving head H = H_shutoff * omega^2 for each pump
+    for (const [partId, snap] of this.snapshots) {
+      const elements = this.graph.elementsByPart.get(partId)
+      if (!elements) continue
+      const pumpEl = elements.find((e) => e.kind === 'pump')
+      if (pumpEl && pumpEl.edgeIndices.length > 0) {
+        const eIdx = pumpEl.edgeIndices[0]!
+        const maxRpm = snap.pumpMaxRpm
+        const omega = Math.min(2.0, snap.pumpRpm / Math.max(1, maxRpm))
+        const pShutoff = snap.pumpMaxHeadPa * omega * omega
+        this.graph.edgeH[eIdx] = pShutoff
       }
     }
 
-    // 2. Solve each pump and its connected intake + discharge pipe trees
-    for (const [pumpId, pumpState] of this.states) {
-      if (pumpState.role !== 'pump') continue
-      const pumpNode = nodes.get(pumpId)
-      if (!pumpNode) continue
+    // Update tank levels and nozzle hydrostatic heads
+    for (const el of this.graph.elements) {
+      if (el.kind === 'tank' && el.area && el.height !== undefined && el.level !== undefined) {
+        let netFlowIn = 0
+        for (let i = 0; i < el.edgeIndices.length; i++) {
+          const eIdx = el.edgeIndices[i]!
+          const q = this.state.flow[eIdx]!
+          netFlowIn -= q
+        }
+        const newLevel = Math.max(0, Math.min(el.height, el.level + (dt * netFlowIn) / el.area))
+        el.level = newLevel
 
-      // Discover the intake (suction) pipe tree connected to the pump's intake ports
-      const intakeTree = this.tracePipeTree(pumpNode, 'intake', nodes)
-      let supplyPipeId: string | null = null
-      for (const pid of intakeTree.order) {
-        const pst = this.states.get(pid)
-        if (pst?.fluidSupply) {
-          supplyPipeId = pid
-          break
+        const elevations = el.nozzleElevations ?? []
+        for (let i = 0; i < el.edgeIndices.length; i++) {
+          const eIdx = el.edgeIndices[i]!
+          const z = elevations[i] ?? 0
+          const hHead = Math.max(0, newLevel - z) * 998.2 * 9.80665
+          this.graph.edgeH[eIdx] = hHead
+        }
+      }
+    }
+
+    stepFluidNetwork(this.graph, this.state, dt)
+
+    // Build beginning-of-tick snapshots for next tick's script evaluation
+    for (const [partId, snap] of this.snapshots) {
+      const elements = this.graph.elementsByPart.get(partId)
+
+      let maxPressurePa = 0
+      let maxFlowM3S = 0
+      let isSupplied = false
+
+      const portsReading: Record<string, { pressure: number; temperature: number }> = {}
+      const elementsReading: Record<string, { flow: number; velocity?: number; level?: number; volume?: number; opening?: number }> = {}
+      const tapsReading: Record<string, { pressure: number; temperature: number; flow: number; connected: boolean }> = {}
+
+      // Measure taps for this part (e.g. pressure transmitters, gauges)
+      const partTaps = this.graph.tapsByPart.get(partId)
+      if (partTaps) {
+        for (const tap of partTaps) {
+          const p = this.state.pressure[tap.nodeIdx] ?? 0
+          if (p > maxPressurePa) maxPressurePa = p
+          const compId = this.graph.nodeComponent[tap.nodeIdx]!
+          if (compId >= 0 && this.isCompSupplied(compId)) {
+            isSupplied = true
+          }
+          tapsReading[tap.name] = {
+            pressure: paToPsi(p),
+            temperature: 20,
+            flow: 0,
+            connected: true,
+          }
         }
       }
 
-      if (!supplyPipeId) {
-        // Pump has no fluid supply on its intake side -> starved (0 PSI, 0 GPM)
-        continue
-      }
-      isSupplied.set(pumpId, true)
+      if (elements) {
+        for (const el of elements) {
+          let elFlow = 0
+          for (const eIdx of el.edgeIndices) {
+            const q = this.state.flow[eIdx]!
+            if (Math.abs(q) > Math.abs(elFlow)) elFlow = q
+            const u = this.graph.edgeFrom[eIdx]!
+            const v = this.graph.edgeTo[eIdx]!
+            if (this.state.pressure[u]! > maxPressurePa) maxPressurePa = this.state.pressure[u]!
+            if (this.state.pressure[v]! > maxPressurePa) maxPressurePa = this.state.pressure[v]!
 
-      // Compute intake path resistance from the supply pipe to the pump intake
-      const intakePath = this.pathFromRoot(supplyPipeId, intakeTree.parent)
-      let rIntake = 0
-      for (const pid of intakePath) {
-        const pst = this.states.get(pid)
-        if (pst) rIntake += pipeResistance(pst.pipeId, pst.length)
-      }
-
-      // Discover the discharge pipe tree connected to the pump's discharge ports
-      const dischargeTree = this.tracePipeTree(pumpNode, 'discharge', nodes)
-      for (const pid of dischargeTree.order) {
-        isSupplied.set(pid, true)
-      }
-
-      const rpm = Math.max(0, pumpState.rpm)
-      if (rpm <= 1e-3) continue
-
-      const omega = rpm / Math.max(1, pumpState.maxRpm)
-      const qMax = Math.max(1e-4, pumpState.gpmPerRpm * rpm)
-      const pShutoff = Math.max(0, pumpState.maxHeadPsi * omega * omega)
-      const rPump = pShutoff / (qMax * qMax)
-
-      // Find all discharge pipes that have an unconnected port AND `openEnd === true`
-      const openLeaves: string[] = []
-      for (const pid of dischargeTree.order) {
-        const pst = this.states.get(pid)
-        const pnode = nodes.get(pid)
-        if (!pst?.openEnd || !pnode) continue
-        if (pnode.ports.some((port) => port.neighbors.length === 0)) {
-          openLeaves.push(pid)
-        }
-      }
-
-      if (openLeaves.length === 0) {
-        // CLOSED / CAPPED DISCHARGE:
-        // Pressure across the pump and all connected discharge pipes rises to shutoff head `pShutoff`.
-        // While pressurizing (current pressure < pShutoff), transient charging flow enters the pipes.
-        targetPressure.set(pumpId, Math.max(targetPressure.get(pumpId) ?? 0, pShutoff))
-        let totalChargingFlow = 0
-        for (const pid of dischargeTree.order) {
-          const pst = this.states.get(pid)
-          if (!pst) continue
-          targetPressure.set(pid, Math.max(targetPressure.get(pid) ?? 0, pShutoff))
-          const dP = Math.max(0, pShutoff - pst.pressure)
-          if (dP > 1e-3 && pShutoff > 1e-3) {
-            const pathIds = this.pathFromRoot(pid, dischargeTree.parent)
-            const capScale = Math.min(1, 0.04 * pst.pipeId * pst.pipeId * pst.length)
-            const qCharge = qMax * (dP / pShutoff) * capScale
-            totalChargingFlow += qCharge
-            for (const upId of pathIds) {
-              targetFlow.set(upId, (targetFlow.get(upId) ?? 0) + qCharge)
+            const compId = this.graph.nodeComponent[u]!
+            if (compId >= 0 && this.isCompSupplied(compId)) {
+              isSupplied = true
             }
           }
-        }
-        totalChargingFlow = Math.min(qMax, totalChargingFlow)
-        targetFlow.set(pumpId, Math.max(targetFlow.get(pumpId) ?? 0, totalChargingFlow))
-        for (const pid of intakePath) {
-          targetFlow.set(pid, Math.max(targetFlow.get(pid) ?? 0, totalChargingFlow))
-        }
-      } else {
-        // FREE-FLOW DISCHARGE (`openEnd === true` on at least one unconnected discharge pipe):
-        // Compute path resistance for each open leaf and combine parallel branches via conductance (1 / sqrt(R)).
-        const leafPaths = openLeaves.map((leafId) => {
-          const pathIds = this.pathFromRoot(leafId, dischargeTree.parent)
-          let rPath = 0
-          for (const pid of pathIds) {
-            const pst = this.states.get(pid)
-            if (pst) rPath += pipeResistance(pst.pipeId, pst.length)
+          if (Math.abs(elFlow) > maxFlowM3S) maxFlowM3S = Math.abs(elFlow)
+
+          if (el.kind === 'tank') {
+            elementsReading[el.name] = {
+              flow: elFlow,
+              level: el.level,
+              volume: el.area && el.level !== undefined ? el.level * el.area : undefined,
+            }
+          } else if (el.kind === 'valve') {
+            const eIdx = el.edgeIndices[0]
+            elementsReading[el.name] = {
+              flow: elFlow,
+              opening: eIdx !== undefined ? this.graph.edgeOpen[eIdx] : 1,
+            }
+          } else {
+            elementsReading[el.name] = { flow: elFlow }
           }
-          const leafSt = this.states.get(leafId)
-          rPath += exitResistance(leafSt?.pipeId ?? 4)
-          return { leafId, pathIds, rPath: Math.max(1e-6, rPath) }
-        })
-
-        let totalConductance = 0
-        for (const lp of leafPaths) totalConductance += 1 / Math.sqrt(lp.rPath)
-        const rDischargeEq = totalConductance > 0 ? 1 / (totalConductance * totalConductance) : 1
-        const rTotal = rIntake + rDischargeEq
-
-        // Operating flow Q where Pump Curve intersects System Resistance Curve
-        const qOperating = Math.min(qMax, Math.sqrt(pShutoff / Math.max(1e-6, rPump + rTotal)))
-        const pDischarge = Math.max(0, pShutoff - rPump * qOperating * qOperating)
-
-        targetPressure.set(pumpId, Math.max(targetPressure.get(pumpId) ?? 0, pDischarge))
-        targetFlow.set(pumpId, Math.max(targetFlow.get(pumpId) ?? 0, qOperating))
-
-        // Intake pipes carry `qOperating`
-        for (const pid of intakePath) {
-          targetFlow.set(pid, (targetFlow.get(pid) ?? 0) + qOperating)
-        }
-
-        // Distribute `qOperating` across open discharge paths
-        for (const lp of leafPaths) {
-          const share = totalConductance > 0 ? (1 / Math.sqrt(lp.rPath)) / totalConductance : 0
-          const qBranch = qOperating * share
-          for (const pid of lp.pathIds) {
-            targetFlow.set(pid, (targetFlow.get(pid) ?? 0) + qBranch)
-          }
-        }
-
-        // Compute pressure along every connected discharge pipe (upstream pressure minus pipe friction drop)
-        const pipePressures = new Map<string, number>()
-        for (const pid of dischargeTree.order) {
-          const parentId = dischargeTree.parent.get(pid)
-          const pUpstream = parentId ? (pipePressures.get(parentId) ?? pDischarge) : pDischarge
-          const pst = this.states.get(pid)
-          const qPipe = targetFlow.get(pid) ?? 0
-          const rPipe = pst ? pipeResistance(pst.pipeId, pst.length) : 0
-          const pHere = Math.max(0, pUpstream - rPipe * qPipe * qPipe)
-          pipePressures.set(pid, pHere)
-          targetPressure.set(pid, Math.max(targetPressure.get(pid) ?? 0, pHere))
         }
       }
-    }
 
-    // 3. Integrate each part's pressure & flow over `dt` and publish next tick's snapshot
-    for (const [id, st] of this.states) {
-      const pTarget = targetPressure.get(id) ?? 0
-      const qTarget = targetFlow.get(id) ?? 0
-      const supplied = isSupplied.get(id) ?? false
+      // Convert to legacy engineering units for backward compatibility
+      let pressurePsi = paToPsi(maxPressurePa)
+      let flowGpm = m3sToGpm(maxFlowM3S)
 
-      // Time constant depends on pipe volume (ID^2 * length) when pressurizing, or DEPRESSURIZE_TAU when decaying
-      const tau =
-        pTarget >= st.pressure
-          ? Math.max(0.04, Math.min(1.5, PIPE_CAPACITANCE_K * st.pipeId * st.pipeId * st.length))
-          : DEPRESSURIZE_TAU
-      const alpha = Math.min(1, dt / tau)
-
-      st.pressure += (pTarget - st.pressure) * alpha
-      st.flow += (qTarget - st.flow) * alpha
-      if (st.pressure < 1e-3 && pTarget === 0) st.pressure = 0
-      if (st.flow < 1e-3 && qTarget === 0) st.flow = 0
-      st.velocity = st.role === 'pipe' ? fluidVelocityFtPerSec(st.flow, st.pipeId) : 0
-      st.supplied = supplied
-
-      // Realistic turbulent micro-jitter (~0.8% pressure, ~1.2% flow) when running/flowing
-      let snapPressure = st.pressure
-      let snapFlow = st.flow
-      if (st.pressure > 0.05) {
-        const phi = partPhase(st.partId)
+      // Micro-jitter when active and pressurized/flowing
+      if (pressurePsi > 0.05 && isSupplied) {
+        const phi = partPhase(partId)
         const np = turbulentNoise(this.simTime, phi)
-        snapPressure = Math.max(0, st.pressure * (1 + 0.008 * np))
+        pressurePsi = Math.max(0, pressurePsi * (1 + 0.008 * np))
       }
-      if (st.flow > 0.05) {
-        const phi = partPhase(st.partId)
+      if (flowGpm > 0.05 && isSupplied) {
+        const phi = partPhase(partId)
         const nq = turbulentNoise(this.simTime + 0.37, phi + 1.2)
-        snapFlow = Math.max(0, st.flow * (1 + 0.012 * nq))
+        flowGpm = Math.max(0, flowGpm * (1 + 0.0001 * nq))
       }
-      const snapVelocity = st.role === 'pipe' ? fluidVelocityFtPerSec(snapFlow, st.pipeId) : 0
 
-      st.snapshot =
-        snapPressure === 0 && snapFlow === 0 && !st.supplied
+      if (pressurePsi < 1e-4) pressurePsi = 0
+      if (flowGpm < 0.02) flowGpm = 0
+
+      const velocityFtSec = (0.4085 * flowGpm) / 16 // based on 4-inch pipe
+
+      snap.reading =
+        pressurePsi === 0 && flowGpm === 0 && !isSupplied
           ? ZERO_FLUID_READING
           : Object.freeze({
-              pressure: snapPressure,
-              flow: snapFlow,
-              velocity: snapVelocity,
-              supplied: st.supplied,
+              pressure: pressurePsi,
+              flow: flowGpm,
+              velocity: velocityFtSec,
+              supplied: isSupplied,
+              ports: portsReading,
+              elements: elementsReading,
+              taps: tapsReading,
             })
     }
   }
 
-  /** BFS from a pump's `side` ('intake' | 'discharge') ports through connected `'pipe'` nodes. */
-  private tracePipeTree(
-    pumpNode: FluidNode,
-    side: 'intake' | 'discharge',
-    nodes: ReadonlyMap<string, FluidNode>,
-  ): { order: string[]; parent: Map<string, string | null> } {
-    const order: string[] = []
-    const parent = new Map<string, string | null>()
-    const visited = new Set<string>([pumpNode.partId])
-
-    for (const port of pumpNode.ports) {
-      if (port.side !== side) continue
-      for (const nb of port.neighbors) {
-        const nbNode = nodes.get(nb.partId)
-        if (!nbNode || nbNode.role !== 'pipe' || visited.has(nb.partId)) continue
-        visited.add(nb.partId)
-        parent.set(nb.partId, null)
-        order.push(nb.partId)
-      }
-    }
-
-    for (let i = 0; i < order.length; i++) {
-      const curId = order[i]!
-      const curNode = nodes.get(curId)
-      if (!curNode) continue
-      for (const port of curNode.ports) {
-        for (const nb of port.neighbors) {
-          const nbNode = nodes.get(nb.partId)
-          if (!nbNode || nbNode.role !== 'pipe' || visited.has(nb.partId)) continue
-          visited.add(nb.partId)
-          parent.set(nb.partId, curId)
-          order.push(nb.partId)
+  private isCompSupplied(compId: number): boolean {
+    const comp = this.graph.components[compId]
+    if (!comp || !comp.hasSourceOrTank) return false
+    for (const u of comp.nodeIndices) {
+      if (this.graph.nodeIsSupply[u] === 1) {
+        const start = this.graph.nodeEdgeStart[u]!
+        const end = this.graph.nodeEdgeStart[u + 1]!
+        for (let idx = start; idx < end; idx++) {
+          const rawE = this.graph.nodeEdges[idx]!
+          const e = rawE >= 0 ? rawE : ~rawE
+          if (this.graph.edgeOpen[e]! > 0) return true
         }
       }
     }
-
-    return { order, parent }
-  }
-
-  /** Reconstruct the ordered pipe path from the pump-adjacent root pipe to `targetPipeId`. */
-  private pathFromRoot(targetPipeId: string, parent: ReadonlyMap<string, string | null>): string[] {
-    const path: string[] = []
-    let cur: string | null | undefined = targetPipeId
-    while (cur) {
-      path.push(cur)
-      cur = parent.get(cur)
-    }
-    path.reverse()
-    return path
-  }
-
-  /** Mark all passive pipes connected to a `fluidSupply = true` pipe as supplied. */
-  private markConnectedPipesSupplied(
-    startId: string,
-    nodes: ReadonlyMap<string, FluidNode>,
-    isSupplied: Map<string, boolean>,
-  ): void {
-    const queue = [startId]
-    const seen = new Set<string>([startId])
-    while (queue.length > 0) {
-      const id = queue.shift()!
-      isSupplied.set(id, true)
-      const node = nodes.get(id)
-      if (!node) continue
-      for (const port of node.ports) {
-        for (const nb of port.neighbors) {
-          const nbNode = nodes.get(nb.partId)
-          if (!nbNode || nbNode.role !== 'pipe' || seen.has(nb.partId)) continue
-          seen.add(nb.partId)
-          queue.push(nb.partId)
-        }
-      }
-    }
+    return false
   }
 }

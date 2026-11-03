@@ -4,7 +4,7 @@ import { clearPackages, registerPackage } from '../core/parts/partRegistry'
 import { validatePartPackage } from '../core/parts/partValidate'
 import type { SdkPart } from '../core/types'
 import * as behavior from './embeddedBehavior'
-import { FluidNetwork } from './fluidNetwork'
+import { FluidNetwork, ZERO_FLUID_READING } from './fluidNetwork'
 
 function pumpPackage(): PartPackage {
   return {
@@ -130,8 +130,8 @@ describe('FluidNetwork 1D hydraulic solver & PLC behavior integration', () => {
 
     for (let i = 0; i < 60; i++) net.step(1 / 60)
 
-    expect(net.readingOf('pump_1')).toEqual({ pressure: 0, flow: 0, velocity: 0, supplied: false })
-    expect(net.readingOf('pipe_out')).toEqual({ pressure: 0, flow: 0, velocity: 0, supplied: false })
+    expect(net.readingOf('pump_1')).toEqual(ZERO_FLUID_READING)
+    expect(net.readingOf('pipe_out')).toEqual(ZERO_FLUID_READING)
   })
 
   it('pressurizes capped discharge pipes (openEnd = false) to shutoff head and settles flow to 0 GPM', () => {
@@ -315,5 +315,140 @@ describe('FluidNetwork 1D hydraulic solver & PLC behavior integration', () => {
     for (let i = 0; i < 240; i++) net.step(1 / 60)
     expect(net.readingOf('pump_1')!.pressure).toBe(0)
     expect(net.readingOf('pump_1')!.flow).toBe(0)
+  })
+
+  it('drains a tank through gravity head, tracking level integration and volume conservation', () => {
+    const tankPackage: PartPackage = {
+      format: PACKAGE_FORMAT,
+      id: 'test.tank_grav',
+      name: 'Gravity Drain Tank',
+      fluid: {
+        ports: [{ name: 'drain', at: [0, 0, 0] }],
+        elements: [
+          {
+            kind: 'tank',
+            name: 'storage',
+            ports: [{ port: 'drain', height: 0 }],
+            area: 1.0, // 1 m²
+            height: 2.0, // 2 m
+            initialLevel: 1.5, // 1.5 m
+          },
+        ],
+      },
+      params: {},
+      behavior: '',
+      geometry: {
+        kind: 'rig',
+        links: [{ name: 'body', shape: { kind: 'cylinder', radius: 0.5, height: 2 }, offset: [0, 0, 0] }],
+        joints: [],
+        bounds: { length: 1, width: 1, top: 2 },
+      },
+    }
+
+    const drainPipePackage: PartPackage = {
+      format: PACKAGE_FORMAT,
+      id: 'test.drain_pipe',
+      name: 'Drain Pipe',
+      fluid: {
+        ports: [
+          { name: 'inlet', at: [0, 0, 0] },
+          { name: 'outlet', at: [1, 0, 0] },
+        ],
+        elements: [
+          {
+            kind: 'pipe',
+            name: 'p',
+            a: 'inlet',
+            b: 'outlet',
+            diameter: 0.05,
+            length: 1.0,
+          },
+          {
+            kind: 'outlet',
+            name: 'discharge',
+            port: 'outlet',
+            diameter: 0.05,
+          },
+        ],
+      },
+      params: {},
+      behavior: '',
+      geometry: {
+        kind: 'rig',
+        links: [{ name: 'tube', shape: { kind: 'box', size: [1, 0.1, 0.1] }, offset: [0, 0, 0] }],
+        joints: [],
+        bounds: { length: 1, width: 0.1, top: 0.1 },
+      },
+    }
+
+    registerPackage(tankPackage)
+    registerPackage(drainPipePackage)
+
+    const tank = makePart('tank_1', 'test.tank_grav', [0, 0, 0], {})
+    const pipe = makePart('pipe_1', 'test.drain_pipe', [0, 0, 0], {})
+
+    const net = new FluidNetwork()
+    net.syncScene([tank, pipe])
+
+    // Initial reading
+    const initRead = net.readingOf('tank_1')!
+    expect(initRead.elements.storage?.level).toBe(1.5)
+
+    // Run 60 ticks (1.0 second) of draining
+    for (let i = 0; i < 60; i++) net.step(1 / 60)
+
+    const drained = net.readingOf('tank_1')!
+    const lvl = drained.elements.storage?.level ?? 0
+    expect(lvl).toBeLessThan(1.5)
+    expect(lvl).toBeGreaterThan(1.0)
+    expect(drained.elements.storage?.volume).toBeCloseTo(lvl * 1.0, 3)
+  })
+
+  it('reads pressure from independent sensor parts equipped with fluid taps', () => {
+    registerPackage(pumpPackage())
+    registerPackage(pipePackage())
+
+    const sensorPackage: PartPackage = {
+      format: PACKAGE_FORMAT,
+      id: 'test.gauge',
+      name: 'Digital Pressure Gauge',
+      fluid: {
+        taps: [
+          { name: 'tap_in', at: [0, 0, 0], reach: 0.1 },
+        ],
+      },
+      params: {},
+      behavior: '',
+      geometry: {
+        kind: 'rig',
+        links: [{ name: 'body', shape: { kind: 'box', size: [0.1, 0.1, 0.1] }, offset: [0, 0, 0] }],
+        joints: [],
+        bounds: { length: 0.1, width: 0.1, top: 0.1 },
+      },
+    }
+    registerPackage(sensorPackage)
+
+    // Intake pipe -> Pump -> Capped discharge pipe
+    const intakePipe = makePart('pipe_in', 'test.pipe', [-1.5, 0, 0], { length: 2, pipeId: 4, fluidSupply: true, openEnd: false })
+    const pump = makePart('pump_1', 'test.pump', [0, 0, 0], { maxRpm: 1800, gpmPerRpm: 0.1, maxHeadPsi: 80 })
+    const disPipe = makePart('pipe_d', 'test.pipe', [1.0, 0.4, 0.3], { length: 2, pipeId: 4, fluidSupply: false, openEnd: false })
+
+    // Separate gauge placed exactly at pump discharge nozzle (0, 0.4, 0.3)
+    const gauge = makePart('gauge_1', 'test.gauge', [0, 0.4, 0.3], {})
+
+    const net = new FluidNetwork()
+    net.syncScene([intakePipe, pump, disPipe, gauge])
+    net.applyCommand('pipe_in', { pipeId: 4, length: 2, fluidSupply: true, openEnd: false })
+    net.applyCommand('pump_1', { rpm: 1800, maxRpm: 1800, gpmPerRpm: 0.1, maxHeadPsi: 80 })
+    net.applyCommand('pipe_d', { pipeId: 4, length: 2, fluidSupply: false, openEnd: false })
+
+    // Run to shutoff pressure
+    for (let i = 0; i < 180; i++) net.step(1 / 60)
+
+    const gRead = net.readingOf('gauge_1')!
+    expect(gRead.taps.tap_in).toBeDefined()
+    expect(gRead.taps.tap_in?.connected).toBe(true)
+    expect(gRead.taps.tap_in?.pressure).toBeCloseTo(80, 0)
+    expect(gRead.pressure).toBeCloseTo(80, 0)
   })
 })

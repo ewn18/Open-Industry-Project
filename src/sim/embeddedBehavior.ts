@@ -95,7 +95,15 @@ type TagVal = number | boolean
 type BeamHit = { hit: boolean; distance: number; color: [number, number, number]; marks?: Readonly<Record<string, CargoMark>> }
 const CLEAR_BEAM: BeamHit = { hit: false, distance: 0, color: [0, 0, 0] }
 const EMPTY_SPEEDS: Record<string, number> = {} // shared empty conveyor-speed map (scene has no conveyors this tick)
-const NO_FLUID: FluidReading = Object.freeze({ pressure: 0, flow: 0, velocity: 0, supplied: false })
+const NO_FLUID: FluidReading = Object.freeze({
+  pressure: 0,
+  flow: 0,
+  velocity: 0,
+  supplied: false,
+  ports: Object.freeze({}),
+  elements: Object.freeze({}),
+  taps: Object.freeze({}),
+})
 // Cap on a published display string. A display crosses the worker boundary every tick it changes, so an
 // unbounded string is a per-tick postMessage cost a part could set arbitrarily high; a panel field that
 // needs more than this has outgrown a readout.
@@ -741,10 +749,7 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
         const openEnd = cmd.openEnd
         if (typeof openEnd === 'boolean') c.openEnd = openEnd
       },
-      fluid: () => {
-        const f = inFluid.v
-        return { pressure: f.pressure, flow: f.flow, velocity: f.velocity, supplied: f.supplied }
-      },
+      fluid: () => inFluid.v,
       spawn: (opts) => {
         if (out.spawns.length >= MAX_SPAWNS_PER_TICK) return
         const req: SpawnReq = {}

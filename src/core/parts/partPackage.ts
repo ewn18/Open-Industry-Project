@@ -929,16 +929,193 @@ export interface ConveyorDecl {
   frictionParam?: string
 }
 
+/** A constant number or an expression resolved from a part parameter: `params[param] * (scale ?? 1) + (add ?? 0)`. */
+export type FluidNum = number | { param: string; scale?: number; add?: number; min?: number; max?: number }
+
+/** A constant boolean or a boolean value resolved from a part parameter with optional inversion. */
+export type FluidBool = boolean | { param: string; not?: boolean }
+
+/** Declaration of an external port on a fluid-participating part. */
+export interface FluidPortDecl {
+  /** Identifier unique within the part (e.g. 'suction', 'discharge', 'inlet', 'outlet', 'a', 'b'). */
+  name: string
+  /** Local coordinate of the port `[x, y, z]`. */
+  at?: [number, number, number]
+  /** Param-driven shifts applied to `at`. */
+  atParams?: SizeParamRef[]
+  /** Reference to a snap.chain endpoint (reusing existing snap points without coordinate duplication). */
+  chain?: { index: number; end: 'start' | 'end' }
+  /** Outward normal direction vector of the port (e.g. `[1, 0, 0]` for +X). */
+  dir?: [number, number, number]
+}
+
+export interface PipeElementDecl {
+  kind: 'pipe'
+  name?: string
+  a: string
+  b: string
+  diameter: FluidNum
+  length?: FluidNum
+  roughness?: FluidNum
+}
+
+export interface PumpElementDecl {
+  kind: 'pump'
+  name?: string
+  suction: string
+  discharge: string
+  ratedRpm: FluidNum
+  shutoffHead: FluidNum
+  ratedFlow: FluidNum
+  reverseFlow?: boolean
+}
+
+export interface ValveElementDecl {
+  kind: 'valve'
+  name?: string
+  a: string
+  b: string
+  diameter: FluidNum
+  characteristic?: 'linear' | 'equalPercent' | 'quickOpen'
+  normallyOpen?: FluidBool
+}
+
+export interface CheckValveElementDecl {
+  kind: 'checkValve'
+  name?: string
+  inlet: string
+  outlet: string
+  diameter: FluidNum
+  crackingPressure?: FluidNum
+}
+
+export interface SourceElementDecl {
+  kind: 'source'
+  name?: string
+  port: string
+  pressure?: FluidNum
+  temperature?: FluidNum
+  enabled?: FluidBool
+  whenUnconnected?: boolean
+}
+
+export interface OutletElementDecl {
+  kind: 'outlet'
+  name?: string
+  port: string
+  diameter: FluidNum
+  enabled?: FluidBool
+  whenUnconnected?: boolean
+}
+
+export interface TankPortSpec {
+  port: string
+  height: FluidNum
+}
+
+export interface TankElementDecl {
+  kind: 'tank'
+  name?: string
+  ports: TankPortSpec[]
+  area: FluidNum
+  height: FluidNum
+  initialLevel?: FluidNum
+  vented?: boolean
+}
+
+export interface MeterElementDecl {
+  kind: 'meter'
+  name?: string
+  a: string
+  b: string
+  diameter: FluidNum
+}
+
+export interface HeaterElementDecl {
+  kind: 'heater'
+  name?: string
+  a: string
+  b: string
+  diameter: FluidNum
+  maxPower: FluidNum
+}
+
+export type FluidElementDecl =
+  | PipeElementDecl
+  | PumpElementDecl
+  | ValveElementDecl
+  | CheckValveElementDecl
+  | SourceElementDecl
+  | OutletElementDecl
+  | TankElementDecl
+  | MeterElementDecl
+  | HeaterElementDecl
+
+export interface FluidTapDecl {
+  name: string
+  at: [number, number, number]
+  reach?: number
+}
+
 /**
- * Declares that a part participates in the 1D hydraulic fluid network. Fluid port positions are taken
- * directly from the part's `snap.chain` endpoints (no duplicate port coordinates):
- * - `'pump'`: an active pressure/flow source driven by `ctx.setFluid({ rpm, maxRpm, gpmPerRpm, maxHeadPsi })`.
- *   Its first chain `start` (or `chain[0]`) is the intake (suction) port; its `end` (or `chain[1]`) is the discharge port.
- * - `'pipe'`: a passive conduit whose inner diameter (`pipeId`, inches), `length` (m), `fluidSupply` (intake source)
- *   and `openEnd` (free-flow vs. capped unconnected end) are set via `ctx.setFluid(...)`.
+ * Declares that a part participates in the 1D hydraulic fluid network.
+ * Can declare ports, elements, nodes, and measurement taps, or legacy role ('pump' | 'pipe').
  */
 export interface FluidSpec {
-  role: 'pump' | 'pipe'
+  /** External connection ports. */
+  ports?: FluidPortDecl[]
+  /** Hydraulic elements internal to or spanning the part's ports. */
+  elements?: FluidElementDecl[]
+  /** Internal node IDs used to connect elements within the part without exposing external ports. */
+  nodes?: string[]
+  /** Measurement taps that sense pressure/flow near a node or edge. */
+  taps?: FluidTapDecl[]
+  /** Legacy role for transitional backward compatibility ('pump' | 'pipe'). */
+  role?: 'pump' | 'pipe'
+}
+
+export interface FluidPortReading {
+  /** Gauge pressure at the port (Pa). */
+  pressure: number
+  /** Fluid temperature at the port (°C). */
+  temperature: number
+}
+
+export interface FluidElementReading {
+  /** Volumetric flow through the element (m³/s, positive from a->b or suction->discharge). */
+  flow: number
+  /** Average fluid velocity in m/s. */
+  velocity?: number
+  /** Liquid level for tanks (m). */
+  level?: number
+  /** Normalized fraction open (0..1) for valves. */
+  opening?: number
+  [key: string]: number | boolean | undefined
+}
+
+export interface FluidTapReading {
+  pressure: number
+  temperature: number
+  flow: number
+  connected: boolean
+}
+
+/** Live solved 1D hydraulic state read by `ctx.fluid()` on a pump or pipe part. */
+export interface FluidReading {
+  /** Gauge pressure at this part (PSI or Pa). */
+  pressure: number
+  /** Volumetric flow rate through this part (GPM or m³/s). */
+  flow: number
+  /** Average fluid velocity in ft/s or m/s (`0.4085 * flow / pipeId^2`). */
+  velocity: number
+  /** True when this part is connected to an active `fluidSupply` source or tank with level > 0. */
+  supplied: boolean
+  /** Readout per declared port. */
+  ports: Record<string, FluidPortReading>
+  /** Readout per declared element. */
+  elements: Record<string, FluidElementReading>
+  /** Readout per measurement tap. */
+  taps: Record<string, FluidTapReading>
 }
 
 /** Per-tick hydraulic parameters handed to `ctx.setFluid(cmd)` by a pump or pipe behavior script. */
@@ -959,18 +1136,8 @@ export interface FluidCommand {
   fluidSupply?: boolean
   /** when true on a `'pipe'` part, an unconnected port on this pipe free-flows; when false (default), an unconnected port is capped and pressurizes */
   openEnd?: boolean
-}
-
-/** Live solved 1D hydraulic state read by `ctx.fluid()` on a pump or pipe part. */
-export interface FluidReading {
-  /** gauge pressure at this part (PSI) */
-  pressure: number
-  /** volumetric flow rate through this part (GPM) */
-  flow: number
-  /** average fluid velocity in ft/s (`0.4085 * flow / pipeId^2`) */
-  velocity: number
-  /** true when this part is connected to an active `fluidSupply` source */
-  supplied: boolean
+  /** arbitrary element-scoped commands (e.g. `{ valve1: { opening: 0.5 } }`) */
+  [key: string]: unknown
 }
 
 export interface PartPackage {

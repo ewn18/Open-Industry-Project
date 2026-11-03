@@ -1,139 +1,202 @@
-import { resolvePartParams } from '../geometry/geometryEval'
+// 3D Spatial-hash port pairing and union-find topological junction extraction.
+
 import { memoizeByParticipants } from '../memoParts'
-import type { ParamValue } from '../parts/partApi'
-import { getPackage } from '../parts/partRegistry'
-import { chainEndpoints, chainsOf } from '../snap/snapConnectors'
-import { rotateXZ } from '../transforms'
 import type { PartInstance, SdkPart } from '../types'
+import { extractWorldFluidPorts, isFluidPart, type WorldFluidPort } from './fluidPorts'
 
-/** World-space distance tolerance (m) within which two fluid ports connect. Matches snap tolerance. */
-const FLUID_PORT_TOL = 0.05
+/** Distance tolerance (m) within which two ports connect. */
+export const FLUID_PORT_TOL = 0.05
+const FLUID_PORT_TOL_SQ = FLUID_PORT_TOL * FLUID_PORT_TOL
 
-export type FluidPortSide = 'intake' | 'discharge' | 'conduit'
-
-export interface FluidPort {
+export interface FluidJunctionPort {
   partId: string
+  name: string
   portIndex: number
-  chainIndex: number
-  side: FluidPortSide
   worldPos: [number, number, number]
-  /** Connected ports on other fluid parts whose world positions coincide within FLUID_PORT_TOL. */
-  neighbors: { partId: string; portIndex: number }[]
 }
 
-export interface FluidNode {
-  partId: string
-  role: 'pump' | 'pipe'
-  ports: FluidPort[]
+export interface FluidJunction {
+  id: number
+  ports: FluidJunctionPort[]
+  worldPos: [number, number, number]
 }
 
 export interface FluidTopology {
-  nodes: ReadonlyMap<string, FluidNode>
+  junctions: readonly FluidJunction[]
+  /** Map from `${partId}:${name}` and `${partId}:#${portIndex}` to junction ID. */
+  portJunctions: ReadonlyMap<string, number>
+  /** Number of other parts connected to this specific port. */
+  portExternalDegree: ReadonlyMap<string, number>
 }
 
-function isFluidPart(part: PartInstance): boolean {
-  return part.type === 'part' && getPackage(part.packageId)?.fluid !== undefined
-}
+// Disjoint-set union (union-find) with path compression and rank
+class UnionFind {
+  private readonly parent: Int32Array
+  private readonly rank: Uint8Array
 
-function toWorldPos(part: SdkPart, local: readonly [number, number, number]): [number, number, number] {
-  const rot = rotateXZ(local[0], local[2], part.rotationY)
-  return [part.position[0] + rot.x, part.position[1] + local[1], part.position[2] + rot.z]
-}
-
-function extractFluidPorts(part: SdkPart): FluidPort[] {
-  const pkg = getPackage(part.packageId)
-  if (!pkg?.fluid) return []
-  const role = pkg.fluid.role
-  const params = resolvePartParams(pkg.params, part.params as Record<string, ParamValue>)
-  const chains = chainsOf(pkg.snap)
-  const ports: FluidPort[] = []
-
-  if (chains.length > 0) {
-    const multiChainPump = role === 'pump' && chains.length >= 2
-    chains.forEach((chain, chainIndex) => {
-      const ends = chainEndpoints(chain, params)
-      if (!ends) return
-      // For a single-chain pump: start = intake, end = discharge.
-      // For a multi-chain pump: chain[0] = intake nozzle, chain[1+] = discharge nozzle(s).
-      const startSide: FluidPortSide =
-        role === 'pump' ? (multiChainPump ? (chainIndex === 0 ? 'intake' : 'discharge') : 'intake') : 'conduit'
-      const endSide: FluidPortSide =
-        role === 'pump' ? (multiChainPump ? (chainIndex === 0 ? 'intake' : 'discharge') : 'discharge') : 'conduit'
-      ports.push({
-        partId: part.id,
-        portIndex: ports.length,
-        chainIndex,
-        side: startSide,
-        worldPos: toWorldPos(part, ends.start),
-        neighbors: [],
-      })
-      ports.push({
-        partId: part.id,
-        portIndex: ports.length,
-        chainIndex,
-        side: endSide,
-        worldPos: toWorldPos(part, ends.end),
-        neighbors: [],
-      })
-    })
+  constructor(size: number) {
+    this.parent = new Int32Array(size)
+    this.rank = new Uint8Array(size)
+    for (let i = 0; i < size; i++) this.parent[i] = i
   }
 
-  if (ports.length === 0) {
-    const lenParam = typeof params.length === 'number' && params.length > 0 ? params.length : 1
-    const half = lenParam / 2
-    ports.push({
-      partId: part.id,
-      portIndex: 0,
-      chainIndex: 0,
-      side: role === 'pump' ? 'intake' : 'conduit',
-      worldPos: toWorldPos(part, [-half, 0, 0]),
-      neighbors: [],
-    })
-    ports.push({
-      partId: part.id,
-      portIndex: 1,
-      chainIndex: 0,
-      side: role === 'pump' ? 'discharge' : 'conduit',
-      worldPos: toWorldPos(part, [half, 0, 0]),
-      neighbors: [],
-    })
+  find(i: number): number {
+    let root = i
+    while (root !== this.parent[root]) root = this.parent[root]!
+    let curr = i
+    while (curr !== root) {
+      const next = this.parent[curr]!
+      this.parent[curr] = root
+      curr = next
+    }
+    return root
   }
 
-  return ports
+  union(i: number, j: number): boolean {
+    const rootI = this.find(i)
+    const rootJ = this.find(j)
+    if (rootI === rootJ) return false
+    const rankI = this.rank[rootI]!
+    const rankJ = this.rank[rootJ]!
+    if (rankI < rankJ) {
+      this.parent[rootI] = rootJ
+    } else if (rankI > rankJ) {
+      this.parent[rootJ] = rootI
+    } else {
+      this.parent[rootJ] = rootI
+      this.rank[rootI] = rankI + 1
+    }
+    return true
+  }
 }
 
-function computeFluidTopologyUncached(parts: readonly PartInstance[]): FluidTopology {
+function cellCoord(val: number): number {
+  return Math.floor(val / FLUID_PORT_TOL)
+}
+
+function cellKey(ix: number, iy: number, iz: number): string {
+  return `${ix},${iy},${iz}`
+}
+
+export function computeFluidTopologyUncached(parts: readonly PartInstance[]): FluidTopology {
   const fluidParts = parts.filter(isFluidPart) as SdkPart[]
-  const nodes = new Map<string, FluidNode>()
-  const allPorts: FluidPort[] = []
+  const allPorts: WorldFluidPort[] = []
 
   for (const part of fluidParts) {
-    const pkg = getPackage(part.packageId)
-    if (!pkg?.fluid) continue
-    const ports = extractFluidPorts(part)
-    nodes.set(part.id, { partId: part.id, role: pkg.fluid.role, ports })
+    const ports = extractWorldFluidPorts(part)
     for (const p of ports) allPorts.push(p)
   }
 
-  const tolSq = FLUID_PORT_TOL * FLUID_PORT_TOL
-  for (let i = 0; i < allPorts.length; i++) {
-    const a = allPorts[i]!
-    for (let j = i + 1; j < allPorts.length; j++) {
-      const b = allPorts[j]!
-      if (a.partId === b.partId) continue
-      const dx = a.worldPos[0] - b.worldPos[0]
-      const dy = a.worldPos[1] - b.worldPos[1]
-      const dz = a.worldPos[2] - b.worldPos[2]
-      if (dx * dx + dy * dy + dz * dz <= tolSq) {
-        a.neighbors.push({ partId: b.partId, portIndex: b.portIndex })
-        b.neighbors.push({ partId: a.partId, portIndex: a.portIndex })
+  const n = allPorts.length
+  if (n === 0) {
+    return {
+      junctions: [],
+      portJunctions: new Map(),
+      portExternalDegree: new Map(),
+    }
+  }
+
+  // 1. Spatial hashing into 3D grid
+  const grid = new Map<string, number[]>()
+  for (let i = 0; i < n; i++) {
+    const p = allPorts[i]!
+    const key = cellKey(cellCoord(p.worldPos[0]), cellCoord(p.worldPos[1]), cellCoord(p.worldPos[2]))
+    let list = grid.get(key)
+    if (!list) {
+      list = []
+      grid.set(key, list)
+    }
+    list.push(i)
+  }
+
+  // 2. Query 27 neighboring cells for each port and union coincident pairs
+  const uf = new UnionFind(n)
+  const portExternalDegree = new Map<string, number>()
+
+  for (let i = 0; i < n; i++) {
+    const pA = allPorts[i]!
+    const cx = cellCoord(pA.worldPos[0])
+    const cy = cellCoord(pA.worldPos[1])
+    const cz = cellCoord(pA.worldPos[2])
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const list = grid.get(cellKey(cx + dx, cy + dy, cz + dz))
+          if (!list) continue
+          for (const j of list) {
+            if (j <= i) continue
+            const pB = allPorts[j]!
+            if (pA.partId === pB.partId) continue // Ports on the same part do not merge ambiently
+            const distSq =
+              (pA.worldPos[0] - pB.worldPos[0]) ** 2 +
+              (pA.worldPos[1] - pB.worldPos[1]) ** 2 +
+              (pA.worldPos[2] - pB.worldPos[2]) ** 2
+            if (distSq <= FLUID_PORT_TOL_SQ) {
+              uf.union(i, j)
+              const keyA = `${pA.partId}:${pA.name}`
+              const keyB = `${pB.partId}:${pB.name}`
+              portExternalDegree.set(keyA, (portExternalDegree.get(keyA) ?? 0) + 1)
+              portExternalDegree.set(keyB, (portExternalDegree.get(keyB) ?? 0) + 1)
+            }
+          }
+        }
       }
     }
   }
 
-  return { nodes }
+  // 3. Collect ports into junctions
+  const junctionGroups = new Map<number, number[]>()
+  for (let i = 0; i < n; i++) {
+    const root = uf.find(i)
+    let group = junctionGroups.get(root)
+    if (!group) {
+      group = []
+      junctionGroups.set(root, group)
+    }
+    group.push(i)
+  }
+
+  const junctions: FluidJunction[] = []
+  const portJunctions = new Map<string, number>()
+  let nextJunctionId = 0
+
+  for (const portIndices of junctionGroups.values()) {
+    const jId = nextJunctionId++
+    let sumX = 0
+    let sumY = 0
+    let sumZ = 0
+    const jPorts: FluidJunctionPort[] = []
+
+    for (const idx of portIndices) {
+      const p = allPorts[idx]!
+      sumX += p.worldPos[0]
+      sumY += p.worldPos[1]
+      sumZ += p.worldPos[2]
+      jPorts.push({
+        partId: p.partId,
+        name: p.name,
+        portIndex: p.portIndex,
+        worldPos: p.worldPos,
+      })
+      portJunctions.set(`${p.partId}:${p.name}`, jId)
+      portJunctions.set(`${p.partId}:#${p.portIndex}`, jId)
+    }
+
+    const count = portIndices.length
+    junctions.push({
+      id: jId,
+      ports: jPorts,
+      worldPos: [sumX / count, sumY / count, sumZ / count],
+    })
+  }
+
+  return {
+    junctions,
+    portJunctions,
+    portExternalDegree,
+  }
 }
 
-/** Memoized on fluid-participating parts (`memoParts.ts`) so non-fluid scene edits cost nothing. */
+/** Memoized topology computation keyed on fluid-participating part references. */
 export const computeFluidTopology = memoizeByParticipants(isFluidPart, computeFluidTopologyUncached)
-

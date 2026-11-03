@@ -943,11 +943,9 @@ export interface PartContext<P extends ParamSchema = ParamSchema, J extends stri
   /**
    * Is the conveyor part with this `id` currently running (commanding a non-zero surface speed)? The
    * cross-part interlock primitive: a spawner passes its `partRef` param to pause the line while the feeding
-   * conveyor is stopped, without a PLC program - the built-in box/pallet spawner's "pause when conveyor
-   * stopped". `id` is a part id (from a `'partRef'` param). An empty id (unset) or an id that names no
-   * speed-bearing part reads as `true` (no interlock / inert dangling ref), so the gate only ever holds on a
-   * conveyor that exists and is genuinely stopped. Read-only + deterministic (the host snapshots every
-   * conveyor's commanded speed once per tick, so all parts read the same values regardless of order).
+   * conveyor is stopped, without a PLC program - the built-in spawner's "pause when conveyor stopped". `id` is a part id.
+   * An empty id or one naming no speed-bearing part reads as `true` (inert dangling ref), so the gate only ever holds on
+   * a conveyor that exists and is genuinely stopped. Read-only + deterministic (the host snapshots once per tick).
    */
   conveyorRunning(id: string): boolean
   /** Drive this part's 1D hydraulic parameters for the current tick (a pump's RPM/curve or a pipe's ID/supply/end state). */
@@ -1477,7 +1475,8 @@ export interface SnapTile {
  * target un-omits the shared end, and the host applies both as one undo entry.
  */
 export interface SnapChain {
-  /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share a group */
+  /** parts chain only with same-group parts - guard rails chain with guard rails; a fence + a safety gate share
+   *  a group; the two groups never mix. The declarative form of the barrier-family rule. */
   group: string
   /** names the `number` param giving the rail length (extends along local +X, half-length = length/2). Optional when both {@link start} and {@link end} are declared. */
   lengthParam?: string
@@ -1491,7 +1490,7 @@ export interface SnapChain {
   end?: [number, number, number]
   /** Param-driven shifts applied to {@link end} (`axis: 0 | 1 | 2`). */
   endParams?: SnapParamOffset[]
-  /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once. */
+  /** Optional: names the `boolean` param for the start-end (local −X) post; set false on a collinear extend and toggled at an L-corner so the shared post draws once. Omit for a linear part with no end posts. */
   omitStartParam?: string
   /** Optional: names the `boolean` param for the end-end (local +X) post - the twin of {@link omitStartParam}. */
   omitEndParam?: string
@@ -1566,20 +1565,26 @@ export interface SnapEdgeMount {
  */
 export interface SnapSpec {
   /** Ambient face-flush: dragged near another part, this part's footprint box sits flush against that part's nearest
-   *  vertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched). */
+   *  vertical footprint face (90-degree-stepped yaw, slide + corner-flush along the face, height untouched). Declare it
+   *  on parts that get tiled - crates, pallets, racks - where flush-beside-the-last-one is wanted on nearly every drop.
+   *  Ambient snapping is always declared intent, never inferred: editor's hold-B Face mode is the explicit alternative. */
   flush?: boolean
   /** Points this part lands onto a compatible host surface (sensors, diverters, …). Every entry is tried against each
-   *  candidate host and the best-fitting one is used, so declaration order does not decide. */
+   *  candidate host and the best-fitting one is used (a body overlapping the host first, then lowest cost - the same
+   *  rule that ranks one host against another), so declaration order does not decide. Since {@link SnapMount.accepts}
+   *  names one surface kind, several entries are how a device says it can seat on more than one kind of host. */
   mounts?: SnapMount[]
   /** seat this part onto a roller conveyor bed, anchored to the roller grid (blade stops, …) */
   track?: SnapTrack
-  /** surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on; a deck a barrier seats along) */
+  /** surfaces this part advertises for other parts to mount onto - the host half (a rail a sensor lands on;
+   *  a deck a barrier seats along) */
   surfaces?: SnapSurface[]
   /** edge-to-edge tiling with same-group parts, coplanar (floor markings tile, decks abut) */
   tile?: SnapTile
   /** end-to-end chaining of a linear part with same-group parts (one chain or an array of chains for multi-port parts) */
   chain?: SnapChain | SnapChain[]
-  /** seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it ({@link SnapEdgeMount}) */
+  /** seat this part on a host deck edge: a barrier along a platform rim, a flight climbing onto it, a gate set
+   *  into its railing ({@link SnapEdgeMount}) */
   edgeMount?: SnapEdgeMount
 }
 
@@ -1662,21 +1667,18 @@ export interface PartDefinition<P extends ParamSchema = ParamSchema, J extends s
    * (ctx.join) makes the same kind of thing. See {@link UnitLoadDecl}.
    */
   unit?: UnitLoadDecl
-  /** Optional 1D fluid dynamics role (`{ role: 'pump' | 'pipe' }`); ports are taken from `snap.chain`. */
+  /** 1D fluid dynamics network participation ({@link FluidSpec}). */
   fluid?: FluidSpec
-  /**
-   * Emit the part's geometry procedurally (Tier 2 in the part authoring guide), for shapes the static manifest
-   * can't list (a bent multi-segment belt, a lofted or revolved profile). It is param-driven and has no side
-   * effects. The host calls it at author time and whenever a param changes, never per sim tick, and it must not
-   * read tags or sim state: the only link to `step()` is the shared `params`. Compose the
-   * {@link GeometryBuilder} ops and return a {@link MeshDescription} the host realizes. The same description
-   * feeds render and collision. It must be deterministic and stay within the vertex budget, or it throws.
-   * Omit it for parts whose geometry is fully described by the manifest.
-   *
-   * `ctx` carries what the host works out about where the part meets its neighbours, for geometry that has to
-   * meet one (see {@link GeometryContext}). It is a plain object, empty when the host resolved nothing, so a part
-   * that ignores it is unaffected. Determinism is over (params, ctx).
-   */
+  /** Emit the part's geometry procedurally (Tier 2 in the part authoring guide), for shapes the static manifest
+   *  can't list (a bent multi-segment belt, a lofted or revolved profile). It is param-driven and has no side
+   *  effects. The host calls it at author time and whenever a param changes, never per sim tick, and it must not
+   *  read tags or sim state: the only link to `step()` is the shared `params`. Compose the
+   *  {@link GeometryBuilder} ops and return a {@link MeshDescription} the host realizes. The same description
+   *  feeds render and collision. It must be deterministic and stay within the vertex budget, or it throws.
+   *  Omit it for parts whose geometry is fully described by the manifest.
+   *  `ctx` carries what the host works out about where the part meets its neighbours, for geometry that has to
+   *  meet one (see {@link GeometryContext}). It is a plain object, empty when the host resolved nothing, so a part
+   *  that ignores it is unaffected. Determinism is over (params, ctx). */
   geometry?(g: GeometryBuilder, params: ParamsOf<P>, ctx: GeometryContext): MeshDescription | MeshPart[]
   /** One-time setup, run once at the start of the part's first tick, just before that tick's step(): `ctx`
    *  already holds the placed position, the params and the tags, and anything it commands (a joint, a lamp)
