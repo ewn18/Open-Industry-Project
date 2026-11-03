@@ -9,7 +9,7 @@ apply.
 ## 1. Goals and boundaries
 
 The intent is to model enough process behavior to make basic water-treatment,
-dairy, oil, and wastewater lines useful. This is a bulk-flow model, not a
+dairy, oil, wastewater, etc. lines useful. This is a bulk-flow model, not a
 chemical process simulator.
 
 The implementation should support:

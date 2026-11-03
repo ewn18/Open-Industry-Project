@@ -1,0 +1,42 @@
+{
+  "id": "oip.fluid-valve",
+  "name": "Fluid Control Valve",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "body",
+        "shape": { "kind": "cylinder", "radius": 0.11, "height": 0.72 },
+        "offset": [0, 0.1, 0],
+        "rotation": [0, 0, 1.570796327],
+        "color": [0.32, 0.52, 0.34]
+      },
+      {
+        "name": "handwheel",
+        "shape": { "kind": "cylinder", "radius": 0.12, "height": 0.035 },
+        "offset": [0, 0.38, 0],
+        "color": [0.2, 0.24, 0.2]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 0.9, "width": 0.3, "top": 0.5 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "inlet", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] },
+      { "name": "outlet", "at": [0.5, 0.1, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      {
+        "kind": "valve",
+        "name": "valve",
+        "a": "inlet",
+        "b": "outlet",
+        "diameter": 0.08,
+        "characteristic": "linear",
+        "normallyOpen": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "id": "oip.fluid-pump",
+  "name": "Fluid Pump",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "housing",
+        "shape": { "kind": "box", "size": [0.7, 0.34, 0.42] },
+        "offset": [0, 0.24, 0],
+        "color": [0.2, 0.36, 0.58]
+      },
+      {
+        "name": "motor",
+        "shape": { "kind": "cylinder", "radius": 0.13, "height": 0.34 },
+        "offset": [-0.05, 0.48, 0],
+        "rotation": [1.570796327, 0, 0],
+        "color": [0.32, 0.34, 0.37]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 1, "width": 0.5, "top": 0.62 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "suction", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] },
+      { "name": "discharge", "at": [0.5, 0.1, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      {
+        "kind": "pump",
+        "name": "pump",
+        "suction": "suction",
+        "discharge": "discharge",
+        "ratedRpm": 1750,
+        "shutoffHead": 550000,
+        "ratedFlow": 0.01
+      }
+    ]
+  }
+}

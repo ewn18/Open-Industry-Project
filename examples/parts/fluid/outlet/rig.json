@@ -1,0 +1,27 @@
+{
+  "id": "oip.fluid-outlet",
+  "name": "Fluid Outlet",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "nozzle",
+        "shape": { "kind": "cylinder", "radius": 0.075, "height": 0.3 },
+        "offset": [0, 0.1, 0],
+        "rotation": [0, 0, 1.570796327],
+        "color": [0.54, 0.57, 0.6]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 0.5, "width": 0.18, "top": 0.19 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "inlet", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] }
+    ],
+    "elements": [
+      { "kind": "outlet", "name": "outlet", "port": "inlet", "diameter": 0.08 }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "oip.fluid-pressure-tap",
+  "name": "Fluid Pressure Tap",
+  "category": "Devices",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "transmitter",
+        "shape": { "kind": "box", "size": [0.16, 0.18, 0.12] },
+        "offset": [0, 0.09, 0],
+        "color": [0.52, 0.55, 0.58]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 0.2, "width": 0.16, "top": 0.2 }
+  },
+  "fluid": {
+    "taps": [
+      { "name": "pressure", "at": [0, 0.1, 0], "reach": 0.25 }
+    ]
+  }
+}

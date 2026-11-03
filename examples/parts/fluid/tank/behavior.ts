@@ -1,0 +1,3 @@
+definePart({
+  step() {},
+})

@@ -1,0 +1,41 @@
+{
+  "id": "oip.fluid-heater",
+  "name": "Fluid Inline Heater",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "body",
+        "shape": { "kind": "cylinder", "radius": 0.13, "height": 0.36 },
+        "offset": [0, 0.1, 0],
+        "rotation": [0, 0, 1.570796327],
+        "color": [0.62, 0.31, 0.16]
+      },
+      {
+        "name": "terminal",
+        "shape": { "kind": "box", "size": [0.16, 0.16, 0.16] },
+        "offset": [0, 0.32, 0],
+        "color": [0.35, 0.36, 0.37]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 0.55, "width": 0.3, "top": 0.42 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "inlet", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] },
+      { "name": "outlet", "at": [0.5, 0.1, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      {
+        "kind": "heater",
+        "name": "heater",
+        "a": "inlet",
+        "b": "outlet",
+        "diameter": 0.08,
+        "maxPower": 12000
+      }
+    ]
+  }
+}

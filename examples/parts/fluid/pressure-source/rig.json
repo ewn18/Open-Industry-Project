@@ -1,0 +1,26 @@
+{
+  "id": "oip.fluid-pressure-source",
+  "name": "Fluid Pressure Source",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "reservoir",
+        "shape": { "kind": "box", "size": [0.72, 0.62, 0.62] },
+        "offset": [0, 0.31, 0],
+        "color": [0.28, 0.48, 0.62]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 1, "width": 0.72, "top": 0.64 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "outlet", "at": [0.5, 0.1, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      { "kind": "source", "name": "source", "port": "outlet", "pressure": 150000 }
+    ]
+  }
+}

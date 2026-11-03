@@ -1,0 +1,44 @@
+{
+  "id": "oip.fluid-tank",
+  "name": "Fluid Storage Tank",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "vessel",
+        "shape": { "kind": "cylinder", "radius": 0.34, "height": 1.25 },
+        "offset": [0, 0.68, 0],
+        "color": [0.42, 0.58, 0.68]
+      },
+      {
+        "name": "base",
+        "shape": { "kind": "cylinder", "radius": 0.37, "height": 0.08 },
+        "offset": [0, 0.04, 0],
+        "color": [0.38, 0.42, 0.45]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 1, "width": 0.8, "top": 1.36 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "drain", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] },
+      { "name": "fill", "at": [0.5, 0.9, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      {
+        "kind": "tank",
+        "name": "tank",
+        "ports": [
+          { "port": "drain", "height": 0.1 },
+          { "port": "fill", "height": 0.9 }
+        ],
+        "area": 0.36,
+        "height": 1.2,
+        "initialLevel": 0.8,
+        "vented": true
+      }
+    ]
+  }
+}

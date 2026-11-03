@@ -1,0 +1,28 @@
+{
+  "id": "oip.fluid-pipe",
+  "name": "Fluid Pipe",
+  "category": "Equipment",
+  "geometry": {
+    "kind": "rig",
+    "links": [
+      {
+        "name": "pipe",
+        "shape": { "kind": "cylinder", "radius": 0.04, "height": 1 },
+        "offset": [0, 0.1, 0],
+        "rotation": [0, 0, 1.570796327],
+        "color": [0.55, 0.58, 0.62]
+      }
+    ],
+    "joints": [],
+    "bounds": { "length": 1, "width": 0.1, "top": 0.15 }
+  },
+  "fluid": {
+    "ports": [
+      { "name": "a", "at": [-0.5, 0.1, 0], "dir": [-1, 0, 0] },
+      { "name": "b", "at": [0.5, 0.1, 0], "dir": [1, 0, 0] }
+    ],
+    "elements": [
+      { "kind": "pipe", "name": "pipe", "a": "a", "b": "b", "diameter": 0.08, "length": 1 }
+    ]
+  }
+}
