@@ -210,7 +210,11 @@ export function compileFluidGraph(parts: readonly PartInstance[], topology: Flui
           nodeIndices: slots.nodeIndices,
           edgeIndices: slots.edgeIndices,
         }
-        if (elDecl.kind === 'valve') {
+        if (elDecl.kind === 'pump') {
+          compiled.ratedRpm = resolveFluidNum(elDecl.ratedRpm, params, 1750)
+          compiled.shutoffHead = resolveFluidNum(elDecl.shutoffHead, params, 550000)
+          compiled.ratedFlow = resolveFluidNum(elDecl.ratedFlow, params, 0.01)
+        } else if (elDecl.kind === 'valve') {
           compiled.characteristic = elDecl.characteristic
         } else if (elDecl.kind === 'tank') {
           compiled.area = Math.max(0.01, resolveFluidNum(elDecl.area, params, 1.0))

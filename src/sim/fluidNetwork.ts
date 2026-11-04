@@ -182,6 +182,8 @@ export class FluidNetwork {
         this.graph.edgeH[eIdx] = pShutoff
       } else if (cmd.speed !== undefined && typeof cmd.speed === 'number') {
         const speed = Math.max(0, Math.min(2.0, cmd.speed))
+        const maxRpm = snap?.pumpMaxRpm ?? pumpEl.ratedRpm ?? 1750
+        if (snap) snap.pumpRpm = speed * maxRpm
         const pShutoff = (snap?.pumpMaxHeadPa ?? pumpEl.shutoffHead ?? 550000) * speed * speed
         this.graph.edgeH[eIdx] = pShutoff
       }

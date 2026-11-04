@@ -732,6 +732,10 @@ export function create(source: string, paramsJson = '{}', servosJson?: string, a
       setFluid: (cmd) => {
         if (typeof cmd !== 'object' || cmd === null) return
         const c = (out.fluid ??= {})
+        const speed = finiteOrUndef((cmd as { speed?: number }).speed)
+        if (speed !== undefined && speed >= 0) c.speed = speed
+        const open = finiteOrUndef((cmd as { open?: number }).open)
+        if (open !== undefined && open >= 0) (c as { open?: number }).open = open
         const rpm = finiteOrUndef(cmd.rpm)
         if (rpm !== undefined && rpm >= 0) c.rpm = rpm
         const maxRpm = finiteOrUndef(cmd.maxRpm)

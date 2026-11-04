@@ -8,8 +8,18 @@ definePart({
       step: 0.05,
       label: 'Valve opening',
     },
+    openTag: {
+      type: 'tag',
+      dir: 'in',
+      stType: 'REAL',
+      default: '',
+      label: 'Opening tag (0-1)',
+    },
   },
   step(ctx) {
-    ctx.setFluid({ open: ctx.params.opening })
+    const open = ctx.params.openTag && ctx.tagDriven(ctx.params.openTag)
+      ? ctx.readNumber(ctx.params.openTag)
+      : ctx.params.opening
+    ctx.setFluid({ open })
   },
 })

@@ -738,12 +738,29 @@ function validateConveyor(p: Record<string, unknown> | undefined, problems: Pack
 function validateFluid(fluid: unknown, problems: PackageProblem[]): void {
   if (fluid === undefined) return
   if (!fluid || typeof fluid !== 'object' || Array.isArray(fluid)) {
-    problems.push({ field: 'fluid', message: "fluid must be an object: { role: 'pump' | 'pipe' }" })
+    problems.push({ field: 'fluid', message: "fluid must be an object declaring ports, elements, or role ('pump' | 'pipe')" })
     return
   }
-  const role = (fluid as { role?: unknown }).role
-  if (role !== 'pump' && role !== 'pipe') {
-    problems.push({ field: 'fluid.role', message: `fluid.role must be 'pump' or 'pipe' (got ${JSON.stringify(role)})` })
+  const f = fluid as Record<string, unknown>
+  if (f.role !== undefined) {
+    if (f.role !== 'pump' && f.role !== 'pipe') {
+      problems.push({ field: 'fluid.role', message: `fluid.role must be 'pump' or 'pipe' (got ${JSON.stringify(f.role)})` })
+    }
+  }
+  if (f.ports !== undefined && !Array.isArray(f.ports)) {
+    problems.push({ field: 'fluid.ports', message: 'fluid.ports must be an array of port declarations' })
+  }
+  if (f.elements !== undefined && !Array.isArray(f.elements)) {
+    problems.push({ field: 'fluid.elements', message: 'fluid.elements must be an array of element declarations' })
+  }
+  if (f.nodes !== undefined && !Array.isArray(f.nodes)) {
+    problems.push({ field: 'fluid.nodes', message: 'fluid.nodes must be an array of node names' })
+  }
+  if (f.taps !== undefined && !Array.isArray(f.taps)) {
+    problems.push({ field: 'fluid.taps', message: 'fluid.taps must be an array of tap declarations' })
+  }
+  if (f.role === undefined && !f.ports && !f.elements && !f.taps) {
+    problems.push({ field: 'fluid', message: "fluid must declare ports, elements, taps, or role ('pump' | 'pipe')" })
   }
 }
 

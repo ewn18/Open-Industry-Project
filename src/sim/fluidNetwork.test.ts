@@ -451,4 +451,79 @@ describe('FluidNetwork 1D hydraulic solver & PLC behavior integration', () => {
     expect(gRead.taps.tap_in?.pressure).toBeCloseTo(80, 0)
     expect(gRead.pressure).toBeCloseTo(80, 0)
   })
+
+  it('runs declarative pump and pipe with ctx.setFluid({ speed }) and fluidSupply', () => {
+    const decPumpPkg: PartPackage = {
+      format: PACKAGE_FORMAT,
+      id: 'test.dec_pump',
+      name: 'Declarative Pump',
+      snap: {
+        chain: [
+          { group: 'piping', reach: 1.5, start: [-0.5, 0, 0], end: [-0.5, 0, 0] },
+          { group: 'piping', reach: 1.5, start: [0.5, 0, 0], end: [0.5, 0, 0] },
+        ],
+      },
+      fluid: {
+        ports: [
+          { name: 'suction', at: [-0.5, 0, 0] },
+          { name: 'discharge', at: [0.5, 0, 0] },
+        ],
+        elements: [
+          { kind: 'pump', name: 'pump', suction: 'suction', discharge: 'discharge', ratedRpm: 1750, shutoffHead: 550000, ratedFlow: 0.01 },
+        ],
+      },
+      params: {},
+      behavior: '',
+      geometry: { kind: 'rig', links: [], joints: [], bounds: { length: 1, width: 0.5, top: 0.5 } },
+    }
+
+    const decPipePkg: PartPackage = {
+      format: PACKAGE_FORMAT,
+      id: 'test.dec_pipe',
+      name: 'Declarative Pipe',
+      snap: {
+        chain: { group: 'piping', lengthParam: 'length', reach: 1.5 },
+      },
+      fluid: {
+        ports: [
+          { name: 'inlet', chain: { index: 0, end: 'start' } },
+          { name: 'outlet', chain: { index: 0, end: 'end' } },
+        ],
+        elements: [
+          { kind: 'pipe', name: 'tube', a: 'inlet', b: 'outlet', diameter: 0.05, length: { param: 'length' } },
+        ],
+      },
+      params: {
+        length: { type: 'number', label: 'Length', default: 2 },
+      },
+      behavior: '',
+      geometry: { kind: 'rig', links: [], joints: [], bounds: { length: 2, width: 0.1, top: 0.1 } },
+    }
+
+    registerPackage(decPumpPkg)
+    registerPackage(decPipePkg)
+
+    // Intake pipe [-1.5, 0, 0] with length 2: inlet at -2.5, outlet at -0.5 (meets pump suction at -0.5)
+    const inPipe = makePart('in_pipe', 'test.dec_pipe', [-1.5, 0, 0], { length: 2, fluidSupply: true, openEnd: false })
+    // Pump at [0, 0, 0]: suction at -0.5, discharge at +0.5
+    const pump = makePart('pump_dec', 'test.dec_pump', [0, 0, 0], {})
+    // Discharge pipe [1.5, 0, 0] with length 2: inlet at +0.5 (meets pump discharge at +0.5), outlet at +2.5
+    const outPipe = makePart('out_pipe', 'test.dec_pipe', [1.5, 0, 0], { length: 2, fluidSupply: false, openEnd: true })
+
+    const net = new FluidNetwork()
+    net.syncScene([inPipe, pump, outPipe])
+
+    net.applyCommand('in_pipe', { fluidSupply: true, openEnd: false })
+    net.applyCommand('pump_dec', { speed: 1.0 })
+    net.applyCommand('out_pipe', { fluidSupply: false, openEnd: true })
+
+    for (let i = 0; i < 120; i++) net.step(1 / 60)
+
+    const pRead = net.readingOf('pump_dec')!
+    expect(pRead.pressure).toBeGreaterThan(5) // Discharge pressure > 5 PSI
+    expect(pRead.flow).toBeGreaterThan(10) // Flow > 10 GPM
+
+    const outRead = net.readingOf('out_pipe')!
+    expect(outRead.flow).toBeGreaterThan(10)
+  })
 })

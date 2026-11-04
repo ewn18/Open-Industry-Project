@@ -1039,6 +1039,10 @@ export interface FluidReading {
 
 /** Per-tick hydraulic parameters handed to `ctx.setFluid(cmd)` by a pump or pipe behavior script. */
 export interface FluidCommand {
+    /** current pump speed factor (0.0 to 1.0 or higher) */
+    speed?: number;
+    /** valve opening fraction (0.0 to 1.0 or boolean) */
+    open?: number | boolean;
     /** current shaft speed (RPM) for a `'pump'` part */
     rpm?: number;
     /** rated shaft speed at 100% command (RPM) for a `'pump'` part */
